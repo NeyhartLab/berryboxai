@@ -1,0 +1,8 @@
+torch
+ultralytics==8.0.186
+numpy
+readQR
+colorcorrectionML
+easyocr
+onnx
+openvino
