@@ -1,5 +1,5 @@
 torch
-ultralytics==8.0.186
+ultralytics==8.1.0
 numpy
 readQR
 colorcorrectionML
