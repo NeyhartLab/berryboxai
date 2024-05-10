@@ -319,8 +319,22 @@ def process_image(img: np.ndarray,
         color = color_feats(image, prefix=prefix)
         glcm = GLCM_feats(image, prefix=prefix)
         other_feats = pd.concat([other_feats, entropy, lbp, color, glcm], axis=1)
+    
+    # Extract L*a*b features
+    lab_feats = pd.DataFrame()
+    img_lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+    lab_prefixes = ["L", "a", "b"]
+    for i in range(img_lab.shape[2]):
+        prefix = lab_prefixes[i]
+        image = img_lab[:,:,i]
+        entropy = Entropy_feats(image, prefix=prefix)
+        lbp = LBP_feats(image, prefix=prefix)
+        color = color_feats(image, prefix=prefix)
+        glcm = GLCM_feats(image, prefix=prefix)
+        lab_feats = pd.concat([other_feats, entropy, lbp, color, glcm], axis=1)
+
     RP = region_properties([poly])
-    return pd.concat([RP, other_feats], axis=1)
+    return pd.concat([RP, other_feats, lab_feats], axis=1)
 
 def get_all_features(results: Results,
                         name: str = 'Hops'
