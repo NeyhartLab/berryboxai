@@ -1,6 +1,8 @@
 # Description: This file contains the functions to compute the features from the images and the results from the YOLOv8-seg model.
 from ultralytics.engine.results import Results
 import cv2
+from PIL import Image
+import os
 import numpy as np
 import pandas as pd
 from readQR import ReadQR
@@ -371,3 +373,83 @@ def get_all_features_parallel(results: Results,
             All_feat = pd.concat([All_feat, future.result()], axis=0, ignore_index=True)
 
     return All_feat
+
+
+# A function to run the entire inference pipeline
+def run_inference(input_dir: str, output_dir: str, params: dict, model):
+
+    image_dir = input_dir
+    save_dir = output_dir
+    # Test if imagedir exists
+    try:
+        foo = os.path.exists(image_dir)
+    except:
+        print("The input 'image_dir' does not exist.")
+
+    # Create an empty pandas data frame
+    DF = pd.DataFrame()
+
+    # List images in the image dir
+    image_files = [x for x in os.listdir(image_dir) if ".JPG" in x.upper() or ".PNG" in x.upper()]
+
+    # Print the number of images
+    print('Running inference and extracting features for ' + str(len(image_files)) + " images...\n")
+
+    # Target model size
+    newH, newW = params["imgsz"]
+
+    # Iterate over the image files
+    for i, img_name in enumerate(image_files):
+        
+        # Read in the image and resize
+        image = Image.open(image_dir + "/" + img_name).resize((newW, newH))
+        
+        # Run through the model
+        results = model.predict(source = image, **params)
+        result = results[0]
+
+        # Process the results
+        # Try color correction; skip if it doesn't work
+        try:
+            result, patch_size = color_correction(result)
+        except:
+            continue
+        # Was "info" found?
+        if any(result.boxes.cls == get_ids(result, 'info')[0]):
+            QR_info = read_QR_code(result)
+        else:
+            print("No 'info' detected by the model.\n")
+            QR_info = img_name
+        # Get features
+        df1 = get_all_features_parallel(result, name= 'berry')
+        df2 = get_all_features_parallel(result, name= 'rotten')
+        df = pd.concat([pd.DataFrame({'name': (['berry'] * df1.shape[0]) + (['rotten'] * df2.shape[0])}), pd.concat([df1, df2], ignore_index = True)], axis = 1)    
+        w,_ = df.shape
+        img_name = [img_name]*w
+        QR_info = [QR_info]*w
+        patch_size = [np.mean(patch_size)]*w
+        indeces = list(range(w))
+        # If indeces is length 0; warn that no berries were found
+        if len(indeces) == 0:
+            print('\033[1;33mNo berries were found in the image!\033[0m')
+            continue
+
+        df_fore = pd.DataFrame({'Image_name': img_name,
+                                'ID': indeces,
+                                'QR_info': QR_info,
+                                'Patch_size': patch_size})
+
+        df = pd.concat([df_fore, df], axis=1)
+        DF = pd.concat([DF, df], axis=0, ignore_index=True)
+
+        img_save_folder = os.path.join(save_dir, 'predictions')
+        if not os.path.exists(img_save_folder):
+            os.makedirs(img_save_folder)
+
+        save_ROI_parallel(result, get_ids(result, 'berry'), os.path.join(img_save_folder, img_name[0]))
+
+        print(f"\nImage {i+1} of {len(image_files)} processed." )
+        
+        
+    DF.to_csv(os.path.join(save_dir, 'features.csv'), index=False)
+    print('Done.')
