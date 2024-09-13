@@ -35,6 +35,7 @@ def options():
     parser.add_argument('--save', help='Save the annotated images from the model output', default = False, action = 'store_true')
     parser.add_argument('--conf', help='Confidence level for segmenting or detecting objects from the model', required = False, default = 0.7)
     parser.add_argument('--imgsz', help='Image size before sending it to the model', required = False, default = (1856, 2784))
+    parser.add_argument('--preview', help = 'Display a preview of the image with predicted features.', default = True, action = 'store_true')
     parser.add_argument('--verbose', help='Should model progress be printed to the terminal?', default = False, action = 'store_true')
     args = parser.parse_args()
     return args
@@ -108,6 +109,46 @@ def capture_rgb_image(file_prefix: str, file_outdir: str, camera: str = "Nikon D
                     stdout = subprocess.DEVNULL)
 
     return outfile_name
+
+# Function to display image with YOLO segmentation masks
+def display_image_with_masks(image_path, results):
+    # Load the image using OpenCV
+    image = cv2.imread(image_path)
+
+    # Get the masks, boxes, and classes from the results
+    masks = results[0].masks.data.cpu().numpy()  # Segmentation masks
+    boxes = results[0].boxes.xyxy.cpu().numpy()  # Bounding boxes
+    class_ids = results[0].boxes.cls.cpu().numpy()  # Class IDs
+    confidences = results[0].boxes.conf.cpu().numpy()  # Confidence scores
+
+    # Generate random colors for each mask
+    colors = np.random.uniform(0, 255, size=(len(masks), 3))
+
+    # Overlay each mask on the image
+    for i, mask in enumerate(masks):
+        # Create a colored mask
+        color = colors[i]
+        colored_mask = np.zeros_like(image, dtype=np.uint8)
+        for c in range(3):  # Apply color to each channel
+            colored_mask[:, :, c] = mask * color[c]
+        
+        # Blend the colored mask with the original image
+        image = cv2.addWeighted(image, 1, colored_mask, 0.5, 0)
+
+        # Draw the bounding box around the object
+        x1, y1, x2, y2 = map(int, boxes[i])
+        cv2.rectangle(image, (x1, y1), (x2, y2), color, 2)
+
+        # Draw the class label and confidence score
+        label = f'Class: {int(class_ids[i])}, Conf: {confidences[i]:.2f}'
+        cv2.putText(image, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
+    # Display the image in a window
+    cv2.imshow("Predictions", image)
+
+    # Wait for a key press and close the window
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
 
 
 ## The main function
@@ -272,11 +313,14 @@ def main():
 
                 print(f"Image {image_name} captured, processed, and features saved with {w} berries detected.\n\n")
 
-                
                 # Save the image with predicted annotations, if requested
                 # THIS WILL NEED TO BE CHANGED FOR ROT DETECTION
                 if save_predictions:
                     save_ROI_parallel(result, get_ids(result, 'berry'), os.path.join(img_save_folder, image_name_vec[0]))
+
+                # Show a preview of the result
+                if args.preview:
+                    display_image_with_masks(image_path = local_image_path, results = results)
 
             # DIFFERENT PROCESS FOR ROT DETECTION #
             elif (mod == "rot-det"):
