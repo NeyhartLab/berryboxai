@@ -7,3 +7,6 @@ easyocr
 onnx
 openvino
 paramiko
+opencv-python
+scp
+pandas

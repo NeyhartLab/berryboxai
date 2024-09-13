@@ -1,6 +1,6 @@
 ## BerryBox AI
 ## 
-## This script provides all of the functions needed to operate the BerryBox,
+## This script provides all of the functions needed to operate the BerryBox,b   
 ## collect images, run the imaged through an analysis pipeline
 ## 
 ## Author: Jeff Neyhart
@@ -17,13 +17,14 @@ import os
 import torch
 import gc
 import shutil
-from PIL import Image
+from PIL import Image # Probably remove this for opencv
 import paramiko
 import time
 from scp import SCPClient
 import pandas as pd
 from ultralytics import YOLO
 import cv2
+import argparse
 
 # options parsers
 def options():
@@ -33,7 +34,7 @@ def options():
     parser.add_argument('--output', help='The directory to store the data output', required = True)
     parser.add_argument('--save', help='Save the annotated images from the model output', default = False, action = 'store_true')
     parser.add_argument('--conf', help='Confidence level for segmenting or detecting objects from the model', required = False, default = 0.7)
-    parser.add_argument('--imgsz', help='Image size before sending it to the model', required = False, default = (1344, 2016))
+    parser.add_argument('--imgsz', help='Image size before sending it to the model', required = False, default = (1856, 2784))
     parser.add_argument('--verbose', help='Should model progress be printed to the terminal?', default = False, action = 'store_true')
     args = parser.parse_args()
     return args
@@ -131,7 +132,7 @@ def main():
 
     # ## RGB CAMERA SETUP ##
     # Check the nikon camera connection
-    check_nikon_camera()
+    setup_nikon_camera(ssh = ssh)
 
 
     ## OUTPUT DIRECTORY AND FILE SETUP ##
@@ -139,6 +140,8 @@ def main():
     # Create directories to store images and metadata
     # Create an output directory
     berrybox_dir = args.output
+    if not os.path.exists(berrybox_dir):
+        os.mkdir(berrybox_dir)
     save_predictions = args.save
     session_dir = berrybox_dir + "/" + session_name
     if not os.path.exists(session_dir):
@@ -157,7 +160,7 @@ def main():
             os.mkdir(img_save_folder)
 
     # Create the filename to save the features
-    output_feature_filename = session_name + "_features.csv"
+    output_feature_filename = output_dir + "/" + session_name + "_features.csv"
     
     ## LOAD THE YOLO MODEL ##
     ['berry-seg', 'rot-det']
@@ -177,15 +180,15 @@ def main():
         'show_conf': True, # hide confidences
         'save_crop': False, # save cropped prediction boxes
         'line_width': 3, # bounding box line width
-        'conf': mod.conf, # confidence threshold
+        'conf': args.conf, # confidence threshold
         'iou': 0.75, # NMS IoU threshold
-        'imgsz': mod.imgsz,
+        'imgsz': args.imgsz,
         'exist_ok': False, # if True, it overwrites current 'name' saving folder
         'half': True, # use FP16 half-precision inference True/False
         'cache': False, # use cache images for faster inference
         'retina_masks': False, #use high resolution seg mask
         'device': "cpu", # cuda device, i.e. 0 or 0,1,2,3 or cpu
-        'verbose': mod.verbose
+        'verbose': args.verbose
     }
 
     # Tuple of image size
@@ -200,13 +203,12 @@ def main():
     try:
         while True:
             # 1. Capture barcode and wait for Enter
-            barcode = input("Scan the barcode (or type 'exit' to quit): ")
+            barcode = input("Scan the barcode and hit 'Enter' (or type 'exit' and hit 'Enter' to quit): ")
             if barcode.lower() == 'exit':
                 break
 
-            input("Press Enter to capture the image...")
-
             # 2. Trigger Nikon D7500 shutter using gphoto2 on Raspberry Pi
+            print("Capturing and transferring the image...")
             remote_image_path = "/home/cranpi2/berrybox/captured_image.jpg"
             trigger_command = f"gphoto2 --capture-image-and-download --filename {remote_image_path} --force-overwrite"
             ssh.exec_command(command = trigger_command)
@@ -217,11 +219,14 @@ def main():
             local_image_path = f"{raw_image_dir}/{barcode}_{current_datetime}.jpg" 
             transfer_image(ssh, remote_image_path, local_image_path)
 
+            print("Running the deep learning model on the image...")
             # 5. Read in the image and resize and run through the YOLO model
+            image_name = local_image_path.split("/")[-1]
             image = Image.open(local_image_path).resize((newW, newH))
             results = model.predict(source = image, **model_params)
             result = results[0]
 
+            print("Processing and saving model results...")
             ## PROCESS RESULTS DEPENDING ON THE MODULE ##
             if (mod == "berry-seg"):
                 # 6. Process the results
@@ -236,8 +241,7 @@ def main():
                 df2 = get_all_features_parallel(result, name= 'rotten')
                 df = pd.concat([pd.DataFrame({'name': (['berry'] * df1.shape[0]) + (['rotten'] * df2.shape[0])}), pd.concat([df1, df2], ignore_index = True)], axis = 1)    
                 w,_ = df.shape
-                img_name = [img_name]*w
-                QR_info = [QR_info]*w
+                image_name_vec = [image_name]*w
                 patch_size = [np.mean(patch_size)]*w
                 indeces = list(range(w))
                 # If indeces is length 0; warn that no berries were found
@@ -246,11 +250,9 @@ def main():
                     continue
 
                 # 7. Save results (image name, date, barcode, object count) to CSV
-                image_name = local_image_path.split("/")[-1]
-
                 data = {
                     'Date': current_datetime,
-                    'Image Name': image_name,
+                    'Image Name': image_name_vec,
                     'QR_info': barcode,
                     'Object_ID': indeces,
                     'Patch_size': patch_size
@@ -268,13 +270,13 @@ def main():
 
                 df.to_csv(output_feature_filename, index=False)
 
-                print(f"Image {image_name} captured, processed, and features saved with {w} berries detected.")
+                print(f"Image {image_name} captured, processed, and features saved with {w} berries detected.\n\n")
 
                 
                 # Save the image with predicted annotations, if requested
                 # THIS WILL NEED TO BE CHANGED FOR ROT DETECTION
                 if save_predictions:
-                    save_ROI_parallel(result, get_ids(result, 'berry'), os.path.join(img_save_folder, img_name[0]))
+                    save_ROI_parallel(result, get_ids(result, 'berry'), os.path.join(img_save_folder, image_name_vec[0]))
 
             # DIFFERENT PROCESS FOR ROT DETECTION #
             elif (mod == "rot-det"):
@@ -311,7 +313,7 @@ def main():
 
                 df.to_csv(output_feature_filename, index=False)
 
-                print(f"Image {image_name} captured, processed, and features saved with {n_berries} sound berries and {n_rotten} rotten berries detected.")
+                print(f"Image {image_name} captured, processed, and features saved with {n_berries} sound berries and {n_rotten} rotten berries detected.\n\n")
 
     finally:
         # Ensure the SSH connection is closed at the end
