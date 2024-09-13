@@ -6,3 +6,4 @@ colorcorrectionML
 easyocr
 onnx
 openvino
+paramiko
