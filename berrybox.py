@@ -35,7 +35,7 @@ def options():
     parser.add_argument('--save', help='Save the annotated images from the model output', default = False, action = 'store_true')
     parser.add_argument('--conf', help='Confidence level for segmenting or detecting objects from the model', required = False, default = 0.7)
     parser.add_argument('--imgsz', help='Image size before sending it to the model', required = False, default = (1856, 2784))
-    parser.add_argument('--preview', help = 'Display a preview of the image with predicted features.', default = True, action = 'store_true')
+    parser.add_argument('--preview', help = 'Display a preview of the image with predicted features.', default = False, action = 'store_true')
     parser.add_argument('--verbose', help='Should model progress be printed to the terminal?', default = False, action = 'store_true')
     args = parser.parse_args()
     return args
