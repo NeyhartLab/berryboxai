@@ -111,9 +111,7 @@ def capture_rgb_image(file_prefix: str, file_outdir: str, camera: str = "Nikon D
     return outfile_name
 
 # Function to display image with YOLO segmentation masks
-def display_image_with_masks(image_path, results):
-    # Load the image using OpenCV
-    image = cv2.imread(image_path)
+def display_image_with_masks(image, results, class_names):
 
     # Get the masks, boxes, and classes from the results
     masks = results[0].masks.data.cpu().numpy()  # Segmentation masks
@@ -140,11 +138,22 @@ def display_image_with_masks(image_path, results):
         cv2.rectangle(image, (x1, y1), (x2, y2), color, 2)
 
         # Draw the class label and confidence score
-        label = f'Class: {int(class_ids[i])}, Conf: {confidences[i]:.2f}'
+        class_name = class_names[int(class_ids[i])]
+        label = f'{class_name}, Conf: {confidences[i]:.2f}'
         cv2.putText(image, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
+    # Resize the image for a smaller preview
+    og_h, og_w = image.shape[:2]
+    new_h = int(og_h * 0.5)
+    new_w = int(og_w * 0.5)
+    image = cv2.resize(image, (new_w, new_h))
+
     # Display the image in a window
-    cv2.imshow("Predictions", image)
+    window_name = "Predictions"
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    cv2.setWindowProperty(window_name, cv2.WND_PROP_TOPMOST, 1)
+    cv2.imshow(window_name, image)
+    # cv2.resizeWindow("Predictions", new_w, new_h)
 
     # Wait for a key press and close the window
     cv2.waitKey(0)
@@ -263,7 +272,8 @@ def main():
             print("Running the deep learning model on the image...")
             # 5. Read in the image and resize and run through the YOLO model
             image_name = local_image_path.split("/")[-1]
-            image = Image.open(local_image_path).resize((newW, newH))
+            image = cv2.imread(local_image_path)
+            image = cv2.resize(image, (newW, newH))
             results = model.predict(source = image, **model_params)
             result = results[0]
 
@@ -320,7 +330,8 @@ def main():
 
                 # Show a preview of the result
                 if args.preview:
-                    display_image_with_masks(image_path = local_image_path, results = results)
+                    print("Close the preview window before proceeding to the next sample.")
+                    display_image_with_masks(image = image, results = results, class_names = ["color_card", "berry", "rotten"])
 
             # DIFFERENT PROCESS FOR ROT DETECTION #
             elif (mod == "rot-det"):
