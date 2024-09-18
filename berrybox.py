@@ -22,7 +22,6 @@ import paramiko
 import time
 from scp import SCPClient
 import pandas as pd
-from ultralytics import YOLO
 import cv2
 import argparse
 
@@ -34,7 +33,7 @@ def options():
     parser.add_argument('--output', help='The directory to store the data output', required = True)
     parser.add_argument('--save', help='Save the annotated images from the model output', default = False, action = 'store_true')
     parser.add_argument('--conf', help='Confidence level for segmenting or detecting objects from the model', required = False, default = 0.7)
-    parser.add_argument('--imgsz', help='Image size before sending it to the model', required = False, default = (1856, 2784))
+    parser.add_argument('--imgsz', help='Image size before sending it to the model', required = False, default = (0, 0))
     parser.add_argument('--preview', help = 'Display a preview of the image with predicted features.', default = False, action = 'store_true')
     parser.add_argument('--verbose', help='Should model progress be printed to the terminal?', default = False, action = 'store_true')
     args = parser.parse_args()
@@ -111,27 +110,30 @@ def capture_rgb_image(file_prefix: str, file_outdir: str, camera: str = "Nikon D
     return outfile_name
 
 # Function to display image with YOLO segmentation masks
-def display_image_with_masks(image, results, class_names):
+def display_image_with_masks(image, results, class_names, show_masks = True):
 
     # Get the masks, boxes, and classes from the results
-    masks = results[0].masks.data.cpu().numpy()  # Segmentation masks
+    if show_masks:
+        masks = results[0].masks.data.cpu().numpy()  # Segmentation masks
     boxes = results[0].boxes.xyxy.cpu().numpy()  # Bounding boxes
     class_ids = results[0].boxes.cls.cpu().numpy()  # Class IDs
     confidences = results[0].boxes.conf.cpu().numpy()  # Confidence scores
 
     # Generate random colors for each mask
-    colors = np.random.uniform(0, 255, size=(len(masks), 3))
+    colors = np.random.uniform(0, 255, size=(len(boxes), 3))
 
-    # Overlay each mask on the image
-    for i, mask in enumerate(masks):
-        # Create a colored mask
+    # Display boxes or masks
+    for i, box in enumerate(boxes):
         color = colors[i]
-        colored_mask = np.zeros_like(image, dtype=np.uint8)
-        for c in range(3):  # Apply color to each channel
-            colored_mask[:, :, c] = mask * color[c]
-        
-        # Blend the colored mask with the original image
-        image = cv2.addWeighted(image, 1, colored_mask, 0.5, 0)
+        # Create a colored mask if called for
+        if show_masks:
+            mask = masks[i]
+            colored_mask = np.zeros_like(image, dtype=np.uint8)
+            for c in range(3):  # Apply color to each channel
+                colored_mask[:, :, c] = mask * color[c]
+
+            # Blend the colored mask with the original image
+            image = cv2.addWeighted(image, 1, colored_mask, 0.5, 0)
 
         # Draw the bounding box around the object
         x1, y1, x2, y2 = map(int, boxes[i])
@@ -158,6 +160,37 @@ def display_image_with_masks(image, results, class_names):
     # Wait for a key press and close the window
     cv2.waitKey(0)
     cv2.destroyAllWindows()
+
+def save_ROI_boxes(image, results, class_names, output_path):
+
+    image1 = image
+    # Get the masks, boxes, and classes from the results
+    boxes = results[0].boxes.xyxy.cpu().numpy()  # Bounding boxes
+    class_ids = results[0].boxes.cls.cpu().numpy()  # Class IDs
+    confidences = results[0].boxes.conf.cpu().numpy()  # Confidence scores
+
+    # Generate random colors for each mask
+    colors = np.random.uniform(0, 255, size=(len(boxes), 3))
+
+    # Display boxes or masks
+    for i, box in enumerate(boxes):
+        color = colors[i]
+
+        # Draw the bounding box around the object
+        x1, y1, x2, y2 = map(int, boxes[i])
+        cv2.rectangle(image1, (x1, y1), (x2, y2), color, 2)
+
+        # Draw the class label and confidence score
+        class_name = class_names[int(class_ids[i])]
+        label = f'{class_name}, Conf: {confidences[i]:.2f}'
+        cv2.putText(image1, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
+    # Save
+    cv2.imwrite(output_path, image1)
+
+
+
+
 
 
 ## The main function
@@ -219,9 +252,21 @@ def main():
     elif mod == "rot-det":
         task = "detect"
     model_name = "berrybox_" + mod + "_openvino_model"
-    model_path = "./data/models/" + model_name
-
+    
+    ## ADJUST THIS ##
+    model_rel_path = os.path.join("C:\\", "Users", "Public", "Phenomics", "berryboxai", "data", "models")
+    model_path = os.path.join(model_rel_path, model_name)
     model = YOLO(model_path, task = task)
+
+    # Set image size
+    image_size = args.imgsz
+    if image_size == (0, 0):
+        if mod == "berry-seg":
+            image_size = (1856, 2784)
+        elif mod == "rot-det":
+            image_size = (1600, 2400)
+
+    confidence = float(args.conf)
 
     ## SET MODEL ARGUMENTS
     model_params = {
@@ -230,9 +275,9 @@ def main():
         'show_conf': True, # hide confidences
         'save_crop': False, # save cropped prediction boxes
         'line_width': 3, # bounding box line width
-        'conf': args.conf, # confidence threshold
+        'conf': confidence, # confidence threshold
         'iou': 0.75, # NMS IoU threshold
-        'imgsz': args.imgsz,
+        'imgsz': image_size,
         'exist_ok': False, # if True, it overwrites current 'name' saving folder
         'half': True, # use FP16 half-precision inference True/False
         'cache': False, # use cache images for faster inference
@@ -335,14 +380,18 @@ def main():
 
             # DIFFERENT PROCESS FOR ROT DETECTION #
             elif (mod == "rot-det"):
-
-                # Count the number of rotten and sound fruit
-                objects_count = len(results[0].boxes)
-                
+                # Get the boxes
+                detected_boxes = results[0].boxes
+                detected_classes = detected_boxes.cls.cpu().numpy()
+                objects_count = len(detected_classes)
                 # If indeces is length 0; warn that no berries were found
-                if len(indeces) == 0:
+                if objects_count == 0:
                     print('\033[1;33mNo berries were found in the image!\033[0m')
                     continue
+
+                # Count rot
+                n_rotten = (detected_classes == 0).sum()
+                n_sound = (detected_classes == 1).sum()
 
                 # 7. Save results (image name, date, barcode, object count) to CSV
                 image_name = local_image_path.split("/")[-1]
@@ -351,13 +400,11 @@ def main():
                     'Date': current_datetime,
                     'Image Name': image_name,
                     'QR_info': barcode,
-                    'NumberSoundBerries': n_berries,
+                    'NumberSoundBerries': n_sound,
                     'NumberRottenBerries': n_rotten,
-                    'FruitRotPer': round(n_rotten / (n_rotten + n_berries))
+                    'FruitRotPer': round((n_rotten / (n_rotten + n_sound) * 100), 3)
                 }
-                df_fore = pd.DataFrame(data)
-                # Combine with the features
-                df = pd.concat([df_fore, df], axis=1)
+                df = pd.DataFrame(data, index = [0])
 
                 # Append to CSV if it exists
                 try:
@@ -368,7 +415,16 @@ def main():
 
                 df.to_csv(output_feature_filename, index=False)
 
-                print(f"Image {image_name} captured, processed, and features saved with {n_berries} sound berries and {n_rotten} rotten berries detected.\n\n")
+                print(f"Image {image_name} captured, processed, and features saved with {n_sound} sound berries and {n_rotten} rotten berries detected.\n\n")
+
+                if save_predictions:
+                    save_ROI_boxes(image = image, results = results, class_names = ["rotten", "sound"], output_path = os.path.join(img_save_folder, image_name))
+
+                # Show a preview of the result
+                if args.preview:
+                    print("Close the preview window before proceeding to the next sample.")
+                    display_image_with_masks(image = image, results = results, class_names = ["rotten", "sound"], show_masks = False)
+
 
     finally:
         # Ensure the SSH connection is closed at the end

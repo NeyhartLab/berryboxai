@@ -1,0 +1,21 @@
+name: berryboxai    # Name of the environment
+channels:
+  - defaults
+  - conda-forge          # (Optional) To include extra packages available on conda-forge
+dependencies:
+  - python=3.9           # Specify the Python version
+  - numpy
+  - pandas
+  - scikit-learn
+  - pip                  # Optionally include pip to install other pip-based dependencies
+  - pip:
+    - ultralytics==8.1.0
+    - readQR
+    - torch
+    - colorcorrectionML
+    - easyocr
+    - openvino
+    - paramiko
+    - opencv-python
+    - scp
+
