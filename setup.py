@@ -30,21 +30,16 @@ class InstallCommand(_install):
         input_weights_path1 = os.path.join(os.path.dirname(__file__), 'berryboxai/data/weights/berrybox_berry-seg.pt')
         input_weights_path2 = os.path.join(os.path.dirname(__file__), 'berryboxai/data/weights/berrybox_rot-det.pt')
 
-        # Path to the weights directory in the package
-        output_weights_dir = os.path.join(os.path.dirname(__file__), 'berryboxai/data/weights')
-        
         # Convert weights to OpenVINO format using Ultralytics
         subprocess.run([
             'python', 'convert_model.py', 
             '--input', input_weights_path1, 
-            '--output', output_weights_dir
         ], check=True)
 
         # Convert weights to OpenVINO format using Ultralytics
         subprocess.run([
             'python', 'convert_model.py', 
             '--input', input_weights_path2, 
-            '--output', output_weights_dir
         ], check=True)
         
         print('Model weights converted to OpenVINO format.')
