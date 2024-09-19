@@ -495,7 +495,6 @@ def main():
 
                 # 7. Save results (image name, date, barcode, object count) to CSV
                 data = {
-                    'Date': current_datetime,
                     'Image Name': image_name_vec,
                     'QR_info': barcode,
                     'Object_ID': indeces,
@@ -541,7 +540,6 @@ def main():
                 image_name = local_image_path.split("/")[-1]
 
                 data = {
-                    'Date': current_datetime,
                     'Image Name': image_name,
                     'QR_info': barcode,
                     'NumberSoundBerries': n_sound,
