@@ -112,7 +112,7 @@ def display_image_with_masks(image, results, class_names, show_masks = True):
 
     # Display boxes or masks
     for i, box in enumerate(boxes):
-        class_id = int(box.cls.cpu().numpy())
+        class_id = int(class_ids[i])
         # Create a colored mask if called for
         if show_masks:
             color = colors[class_id+1]
@@ -164,7 +164,7 @@ def save_ROI_boxes(image, results, class_names, output_path):
 
     # Display boxes or masks
     for i, box in enumerate(boxes):
-        class_id = int(box.cls.cpu().numpy())
+        class_id = int(class_ids[i])
         color = colors[class_id]
 
         # Draw the bounding box around the object
