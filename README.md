@@ -22,11 +22,11 @@
         + Move the .zip file to a suitable location, like the Documents folder.
         + Unzip the .zip file
 
-3. Open up Powershell (Windows) or Terminal (Mac) and navigate to the unzipped folder:
+3. Open up Powershell (Windows) or Terminal (Mac) and navigate to the `berryboxai` folder:
     ```
-    cd /path/to/unzipped/berryboxai/
+    cd /path/to/berryboxai/
     ```
-    > Remember to replace "/path/to/unzipped" with the true path to the folder. 
+    > Remember to replace "/path/to/" with the true path to the folder. 
 
 4. Create a Conda environment by typing the following:
     ```
@@ -40,5 +40,10 @@
 
 6. Install the package
     ```
-    python setup.py install
+    python -m pip install .
     ```
+
+
+## Using `berryboxai`
+
+1. 

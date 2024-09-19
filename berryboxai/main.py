@@ -33,7 +33,7 @@ def options():
     parser = argparse.ArgumentParser(description='BerryBoxAI v 1.0')
     parser.add_argument('-m', '--module', help='Which module to run. Can be "berry-seg" for berry segmentation and quality or "rot-det" for detecting the amount of fruit rot in a sample.', 
                         required = True, choices = ['berry-seg', 'rot-det'], default = 'berry-seg')
-    parser.add_argument('--input', help='Directory containing images to process. Providing this input directory will disable the interactive mode of berrybox and instead run the inference pipeline on a batch of images', 
+    parser.add_argument('--input', help='Directory containing images to process. Providing this input directory will disable the interactive mode of berrybox and instead run the inference pipeline on a batch of images. If ignored, the pipeline will run in interactive mode.', 
                         required = False, default = "NULL")
     parser.add_argument('--output', help='The directory to store the data output', required = True)
     parser.add_argument('--conf', help='Confidence level for segmenting or detecting objects from the model', required = False, default = 0)
@@ -187,10 +187,8 @@ def main():
     # Determine if 'input' is provided
     input_dir = args.input
     if input_dir == "NULL":
-        print("\nRunning berryboxai in interactive mode...\n\n")
         interactive = True
     else:
-        print("\nRunning berryboxai in batch mode...\n\n")
         interactive = False
 
 
@@ -300,6 +298,7 @@ def main():
 
     if interactive:
         ## RUN THE CAPTURE PIPELINE ##
+        print("\nRunning berryboxai in interactive mode using the " + mod + "module...\n")
 
         # Main loop for capturing multiple images
         try:
@@ -443,149 +442,124 @@ def main():
 
     else:
         ## RUN THE BATCH PIPELINE ##
+        print("\nRunning berryboxai in batch mode using the " + mod + "module...\n")
 
-        # Main loop for capturing multiple images
-        try:
-            while True:
-                # 1. Capture barcode and wait for Enter
-                barcode = input("Scan the barcode and hit 'Enter' (or type 'exit' and hit 'Enter' to quit): ")
-                if barcode.lower() == 'exit':
-                    break
-                    
-                # Date-time for printing
-                current_datetime = get_time()
+        # List images in the input directory
+        image_list = os.listdir(input_dir)
+        image_path_list = [os.path.join(input_dir, x) for x in image_list if ".JPG" in x.upper()]
 
-                # 2. Trigger Nikon D7500 shutter using gphoto2 on Raspberry Pi
-                print("Capturing and transferring the image...")
-                remote_image_path = "/home/cranpi2/berrybox/captured_image.jpg"
-                trigger_command = f"gphoto2 --capture-image-and-download --filename {remote_image_path} --force-overwrite"
-                ssh.exec_command(command = trigger_command)
-                # Wait a bit to ensure the image is captured and transferred
-                time.sleep(3)
+        # Print the number of images found
+        print("Using images from the directory: " + input_dir)
+        print("Discovered " + str(len(image_list)) + " images in the directory")
+        print("Running the deep learning model on the images...")
 
-                # 4. Transfer the image from Raspberry Pi to local machine
-                local_image_path = f"{raw_image_dir}/{barcode}_{current_datetime}.jpg" 
-                transfer_image(ssh, remote_image_path, local_image_path)
+        # Iterate over images
+        for p, local_image_path in enumerate(image_path_list):
 
-                print("Running the deep learning model on the image...")
-                # 5. Read in the image and resize and run through the YOLO model
+            # 5. Read in the image and resize and run through the YOLO model
+            image_name = local_image_path.split("/")[-1]
+            image = cv2.imread(local_image_path)
+            image = cv2.resize(image, (newW, newH))
+            results = model.predict(source = image, **model_params)
+            result = results[0]
+
+            print("Processing and saving model results...")
+            ## PROCESS RESULTS DEPENDING ON THE MODULE ##
+            if (mod == "berry-seg"):
+                # 6. Process the results
+                # Try color correction; skip if it doesn't work
+                try:
+                    result, patch_size = color_correction(result)
+                except:
+                    continue
+
+                # Get features
+                df1 = get_all_features_parallel(result, name= 'berry')
+                df2 = get_all_features_parallel(result, name= 'rotten')
+                df = pd.concat([pd.DataFrame({'name': (['berry'] * df1.shape[0]) + (['rotten'] * df2.shape[0])}), pd.concat([df1, df2], ignore_index = True)], axis = 1)    
+                w,_ = df.shape
+                image_name_vec = [image_name]*w
+                patch_size = [np.mean(patch_size)]*w
+                indeces = list(range(w))
+                # If indeces is length 0; warn that no berries were found
+                if len(indeces) == 0:
+                    print('\033[1;33mNo berries were found in the image!\033[0m')
+                    continue
+
+                # 7. Save results (image name, date, barcode, object count) to CSV
+                data = {
+                    'Date': current_datetime,
+                    'Image Name': image_name_vec,
+                    'QR_info': barcode,
+                    'Object_ID': indeces,
+                    'Patch_size': patch_size
+                }
+                df_fore = pd.DataFrame(data)
+                # Combine with the features
+                df = pd.concat([df_fore, df], axis=1)
+
+                # Append to CSV if it exists
+                try:
+                    existing_df = pd.read_csv(output_feature_filename)
+                    df = pd.concat([existing_df, df], axis = 0, ignore_index=True)
+                except FileNotFoundError:
+                    pass
+
+                df.to_csv(output_feature_filename, index=False)
+
+                print(f"Image {image_name} processed and features saved with {w} berries detected.\n")
+
+                # Save the image with predicted annotations, if requested
+                # THIS WILL NEED TO BE CHANGED FOR ROT DETECTION
+                if save_predictions:
+                    save_ROI_parallel(result, get_ids(result, 'berry'), os.path.join(img_save_folder, image_name_vec[0]))
+
+
+            # DIFFERENT PROCESS FOR ROT DETECTION #
+            elif (mod == "rot-det"):
+                # Get the boxes
+                detected_boxes = results[0].boxes
+                detected_classes = detected_boxes.cls.cpu().numpy()
+                objects_count = len(detected_classes)
+                # If indeces is length 0; warn that no berries were found
+                if objects_count == 0:
+                    print('\033[1;33mNo berries were found in the image!\033[0m')
+                    continue
+
+                # Count rot
+                n_rotten = (detected_classes == 0).sum()
+                n_sound = (detected_classes == 1).sum()
+
+                # 7. Save results (image name, date, barcode, object count) to CSV
                 image_name = local_image_path.split("/")[-1]
-                image = cv2.imread(local_image_path)
-                image = cv2.resize(image, (newW, newH))
-                results = model.predict(source = image, **model_params)
-                result = results[0]
 
-                print("Processing and saving model results...")
-                ## PROCESS RESULTS DEPENDING ON THE MODULE ##
-                if (mod == "berry-seg"):
-                    # 6. Process the results
-                    # Try color correction; skip if it doesn't work
-                    try:
-                        result, patch_size = color_correction(result)
-                    except:
-                        continue
+                data = {
+                    'Date': current_datetime,
+                    'Image Name': image_name,
+                    'QR_info': barcode,
+                    'NumberSoundBerries': n_sound,
+                    'NumberRottenBerries': n_rotten,
+                    'FruitRotPer': round((n_rotten / (n_rotten + n_sound) * 100), 3)
+                }
+                df = pd.DataFrame(data, index = [0])
 
-                    # Get features
-                    df1 = get_all_features_parallel(result, name= 'berry')
-                    df2 = get_all_features_parallel(result, name= 'rotten')
-                    df = pd.concat([pd.DataFrame({'name': (['berry'] * df1.shape[0]) + (['rotten'] * df2.shape[0])}), pd.concat([df1, df2], ignore_index = True)], axis = 1)    
-                    w,_ = df.shape
-                    image_name_vec = [image_name]*w
-                    patch_size = [np.mean(patch_size)]*w
-                    indeces = list(range(w))
-                    # If indeces is length 0; warn that no berries were found
-                    if len(indeces) == 0:
-                        print('\033[1;33mNo berries were found in the image!\033[0m')
-                        continue
+                # Append to CSV if it exists
+                try:
+                    existing_df = pd.read_csv(output_feature_filename)
+                    df = pd.concat([existing_df, df], axis = 0, ignore_index=True)
+                except FileNotFoundError:
+                    pass
 
-                    # 7. Save results (image name, date, barcode, object count) to CSV
-                    data = {
-                        'Date': current_datetime,
-                        'Image Name': image_name_vec,
-                        'QR_info': barcode,
-                        'Object_ID': indeces,
-                        'Patch_size': patch_size
-                    }
-                    df_fore = pd.DataFrame(data)
-                    # Combine with the features
-                    df = pd.concat([df_fore, df], axis=1)
+                df.to_csv(output_feature_filename, index=False)
 
-                    # Append to CSV if it exists
-                    try:
-                        existing_df = pd.read_csv(output_feature_filename)
-                        df = pd.concat([existing_df, df], axis = 0, ignore_index=True)
-                    except FileNotFoundError:
-                        pass
+                print(f"Image {image_name} processed, and features saved with {n_sound} sound berries and {n_rotten} rotten berries detected.\n\n")
 
-                    df.to_csv(output_feature_filename, index=False)
+                if save_predictions:
+                    save_ROI_boxes(image = image, results = results, class_names = ["rotten", "sound"], output_path = os.path.join(img_save_folder, image_name))
 
-                    print(f"Image {image_name} captured, processed, and features saved with {w} berries detected.\n\n")
+            print(f"Image {p + 1} of {len(image_list)} processed.")
 
-                    # Save the image with predicted annotations, if requested
-                    # THIS WILL NEED TO BE CHANGED FOR ROT DETECTION
-                    if save_predictions:
-                        save_ROI_parallel(result, get_ids(result, 'berry'), os.path.join(img_save_folder, image_name_vec[0]))
-
-                    # Show a preview of the result
-                    if args.preview:
-                        print("Close the preview window before proceeding to the next sample.")
-                        display_image_with_masks(image = image, results = results, class_names = ["color_card", "berry", "rotten"])
-
-                # DIFFERENT PROCESS FOR ROT DETECTION #
-                elif (mod == "rot-det"):
-                    # Get the boxes
-                    detected_boxes = results[0].boxes
-                    detected_classes = detected_boxes.cls.cpu().numpy()
-                    objects_count = len(detected_classes)
-                    # If indeces is length 0; warn that no berries were found
-                    if objects_count == 0:
-                        print('\033[1;33mNo berries were found in the image!\033[0m')
-                        continue
-
-                    # Count rot
-                    n_rotten = (detected_classes == 0).sum()
-                    n_sound = (detected_classes == 1).sum()
-
-                    # 7. Save results (image name, date, barcode, object count) to CSV
-                    image_name = local_image_path.split("/")[-1]
-
-                    data = {
-                        'Date': current_datetime,
-                        'Image Name': image_name,
-                        'QR_info': barcode,
-                        'NumberSoundBerries': n_sound,
-                        'NumberRottenBerries': n_rotten,
-                        'FruitRotPer': round((n_rotten / (n_rotten + n_sound) * 100), 3)
-                    }
-                    df = pd.DataFrame(data, index = [0])
-
-                    # Append to CSV if it exists
-                    try:
-                        existing_df = pd.read_csv(output_feature_filename)
-                        df = pd.concat([existing_df, df], axis = 0, ignore_index=True)
-                    except FileNotFoundError:
-                        pass
-
-                    df.to_csv(output_feature_filename, index=False)
-
-                    print(f"Image {image_name} captured, processed, and features saved with {n_sound} sound berries and {n_rotten} rotten berries detected.\n\n")
-
-                    if save_predictions:
-                        save_ROI_boxes(image = image, results = results, class_names = ["rotten", "sound"], output_path = os.path.join(img_save_folder, image_name))
-
-                    # Show a preview of the result
-                    if args.preview:
-                        print("Close the preview window before proceeding to the next sample.")
-                        display_image_with_masks(image = image, results = results, class_names = ["rotten", "sound"], show_masks = False)
-
-
-        finally:
-            # Ensure the SSH connection is closed at the end
-            ssh.close()
-            print("SSH connection closed.")   
-
-
-
+        print("\nAll images processed. Results are saved in " + img_save_folder)   
 
 # Runs main function
 if __name__ == '__main__':
