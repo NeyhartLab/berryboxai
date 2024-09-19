@@ -160,11 +160,12 @@ def save_ROI_boxes(image, results, class_names, output_path):
     confidences = results[0].boxes.conf.cpu().numpy()  # Confidence scores
 
     # Generate random colors for each mask
-    colors = np.random.uniform(0, 255, size=(len(boxes), 3))
+    colors = [(0, 255, 0), (255, 0, 0)]  # Green for class 0, Red for class 1
 
     # Display boxes or masks
     for i, box in enumerate(boxes):
-        color = colors[i]
+        class_id = int(box.cls.cpu().numpy())
+        color = colors[class_id]
 
         # Draw the bounding box around the object
         x1, y1, x2, y2 = map(int, boxes[i])
