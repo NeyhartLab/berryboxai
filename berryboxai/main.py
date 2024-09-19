@@ -480,6 +480,13 @@ def main():
                 except:
                     continue
 
+                # Was "info" found?
+                if any(result.boxes.cls == get_ids(result, 'info')[0]):
+                    barcode = read_QR_code(result)
+                else:
+                    print("No 'info' detected by the model.\n")
+                    barcode = image_name
+
                 # Get features
                 df1 = get_all_features_parallel(result, name= 'berry')
                 df2 = get_all_features_parallel(result, name= 'rotten')
@@ -496,7 +503,6 @@ def main():
                 # 7. Save results (image name, date, barcode, object count) to CSV
                 data = {
                     'Image Name': image_name_vec,
-                    'QR_info': barcode,
                     'Object_ID': indeces,
                     'Patch_size': patch_size
                 }
