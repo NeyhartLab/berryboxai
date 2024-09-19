@@ -245,10 +245,10 @@ def main():
     ## SET MODULE-SPECIFIC SETTINGS ##
     if mod == "berry-seg":
         task = "segment"
-        iou = 0.20
+        iou = 0.25
     elif mod == "rot-det":
         task = "detect"
-        iou = 0.20       
+        iou = 0.25       
 
     # Set image size, confidence, and iou
     image_size = args.imgsz
@@ -264,7 +264,7 @@ def main():
         if mod == "berry-seg":
             confidence = 0.75
         elif mod == "rot-det":
-            confidence = 0.45
+            confidence = 0.50
 
     ## LOAD THE YOLO MODEL ##
     if platform.system() == "Windows":
