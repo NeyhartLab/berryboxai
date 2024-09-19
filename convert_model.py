@@ -7,7 +7,7 @@ from ultralytics import YOLO
 import os
 import argparse
 
-def convert_yolo_to_openvino(input_path, output_dir):
+def convert_yolo_to_openvino(input_path):
     # Load the YOLO model
     model = YOLO(input_path)
     # Check which module it is and assign image size

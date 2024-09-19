@@ -458,7 +458,7 @@ def main():
         # Print the number of images found
         print("Using images from the directory: " + input_dir)
         print("Discovered " + str(len(image_list)) + " images in the directory")
-        print("Running the deep learning model on the images...")
+        print("Running the deep learning model on the images...\n")
 
         # Iterate over images
         for p, local_image_path in enumerate(image_path_list):
@@ -470,7 +470,6 @@ def main():
             results = model.predict(source = image, **model_params)
             result = results[0]
 
-            print("Processing and saving model results...")
             ## PROCESS RESULTS DEPENDING ON THE MODULE ##
             if (mod == "berry-seg"):
                 # 6. Process the results
@@ -520,7 +519,7 @@ def main():
 
                 df.to_csv(output_feature_filename, index=False)
 
-                print(f"Image {image_name} processed and features saved with {w} berries detected.\n")
+                print(f"Image {image_name} processed and features saved with {w} berries detected.")
 
                 # Save the image with predicted annotations, if requested
                 # THIS WILL NEED TO BE CHANGED FOR ROT DETECTION
@@ -563,12 +562,12 @@ def main():
 
                 df.to_csv(output_feature_filename, index=False)
 
-                print(f"Image {image_name} processed, and features saved with {n_sound} sound berries and {n_rotten} rotten berries detected.\n\n")
+                print(f"Image {image_name} processed, and features saved with {n_sound} sound berries and {n_rotten} rotten berries detected.")
 
                 if save_predictions:
                     save_ROI_boxes(image = image, results = results, class_names = ["rotten", "sound"], output_path = os.path.join(img_save_folder, image_name))
 
-            print(f"Image {p + 1} of {len(image_list)} processed.")
+            print(f"Image {p + 1} of {len(image_list)} processed.\n")
 
         print("\nAll images processed. Results are saved in " + img_save_folder)   
 
