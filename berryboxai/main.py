@@ -105,18 +105,17 @@ def display_image_with_masks(image, results, class_names, show_masks = True):
     # Get the masks, boxes, and classes from the results
     if show_masks:
         masks = results[0].masks.data.cpu().numpy()  # Segmentation masks
+    colors = [(0, 255, 0), (255, 0, 0)]  # Green for class 0, Red for class 1
     boxes = results[0].boxes.xyxy.cpu().numpy()  # Bounding boxes
     class_ids = results[0].boxes.cls.cpu().numpy()  # Class IDs
     confidences = results[0].boxes.conf.cpu().numpy()  # Confidence scores
 
-    # Generate random colors for each mask
-    colors = np.random.uniform(0, 255, size=(len(boxes), 3))
-
     # Display boxes or masks
     for i, box in enumerate(boxes):
-        color = colors[i]
+        class_id = int(box.cls.cpu().numpy())
         # Create a colored mask if called for
         if show_masks:
+            color = colors[class_id+1]
             mask = masks[i]
             colored_mask = np.zeros_like(image, dtype=np.uint8)
             for c in range(3):  # Apply color to each channel
@@ -124,13 +123,15 @@ def display_image_with_masks(image, results, class_names, show_masks = True):
 
             # Blend the colored mask with the original image
             image = cv2.addWeighted(image, 1, colored_mask, 0.5, 0)
+        else:
+            color = colors[class_id]
 
         # Draw the bounding box around the object
         x1, y1, x2, y2 = map(int, boxes[i])
         cv2.rectangle(image, (x1, y1), (x2, y2), color, 2)
 
         # Draw the class label and confidence score
-        class_name = class_names[int(class_ids[i])]
+        class_name = class_names[class_id]
         label = f'{class_name}, Conf: {confidences[i]:.2f}'
         cv2.putText(image, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
