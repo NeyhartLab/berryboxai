@@ -1,2 +1,1 @@
-data/models/*openvino_model/
-data/models/*onnx
+data/models/*
