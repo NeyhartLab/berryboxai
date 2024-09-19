@@ -254,8 +254,8 @@ def main():
         model_name = "berrybox_" + mod + ".pt"
 
     # This finds the model within the package structure
-    package_dir = pkg_resources.resource_filename('berryboxai')
-    model_path = os.path.join(package_dir, 'data', 'weights', model_name)
+    package_dir = pkg_resources.resource_filename('berryboxai', 'data')
+    model_path = os.path.join(package_dir, 'weights', model_name)
 
     model = YOLO(model_path, task = task)
 
