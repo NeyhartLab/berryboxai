@@ -503,6 +503,7 @@ def main():
                 # 7. Save results (image name, date, barcode, object count) to CSV
                 data = {
                     'Image Name': image_name_vec,
+                    'QR_info': barcode,
                     'Object_ID': indeces,
                     'Patch_size': patch_size
                 }
@@ -547,7 +548,6 @@ def main():
 
                 data = {
                     'Image Name': image_name,
-                    'QR_info': barcode,
                     'NumberSoundBerries': n_sound,
                     'NumberRottenBerries': n_rotten,
                     'FruitRotPer': round((n_rotten / (n_rotten + n_sound) * 100), 3)
