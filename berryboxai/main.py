@@ -240,12 +240,31 @@ def main():
     # Create the filename to save the features
     output_feature_filename = output_dir + "/" + session_name + "_features.csv"
     
-    ## LOAD THE YOLO MODEL ##
-    ['berry-seg', 'rot-det']
+    ## SET MODULE-SPECIFIC SETTINGS ##
     if mod == "berry-seg":
         task = "segment"
+        iou = 0.75
     elif mod == "rot-det":
         task = "detect"
+        iou = 0.25       
+
+    # Set image size, confidence, and iou
+    image_size = args.imgsz
+    if image_size == (0, 0):
+        if mod == "berry-seg":
+            image_size = (1856, 2784)
+        elif mod == "rot-det":
+            image_size = (1600, 2400)
+
+    # Set confidence
+    confidence = float(args.conf)
+    if confidence == 0:
+        if mod == "berry-seg":
+            confidence = 0.75
+        elif mod == "rot-det":
+            confidence = 0.40
+
+    ## LOAD THE YOLO MODEL ##
     if platform.system() == "Windows":
         model_name = "berrybox_" + mod + "_openvino_model"
         device = "cpu"
@@ -261,22 +280,6 @@ def main():
 
     model = YOLO(model_path, task = task)
 
-    # Set image size
-    image_size = args.imgsz
-    if image_size == (0, 0):
-        if mod == "berry-seg":
-            image_size = (1856, 2784)
-        elif mod == "rot-det":
-            image_size = (1600, 2400)
-
-    confidence = float(args.conf)
-    if confidence == 0:
-        if mod == "berry-seg":
-            confidence = 0.75
-        elif mod == "rot-det":
-            confidence = 0.40
-
-    # Determine the device to use
 
 
     ## SET MODEL ARGUMENTS
@@ -287,7 +290,7 @@ def main():
         'save_crop': False, # save cropped prediction boxes
         'line_width': 3, # bounding box line width
         'conf': confidence, # confidence threshold
-        'iou': 0.75, # NMS IoU threshold
+        'iou': iou, # NMS IoU threshold
         'imgsz': image_size,
         'exist_ok': False, # if True, it overwrites current 'name' saving folder
         'half': True, # use FP16 half-precision inference True/False
