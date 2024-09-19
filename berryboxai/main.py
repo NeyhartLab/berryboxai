@@ -248,6 +248,10 @@ def main():
         task = "detect"
     if platform.system() == "Windows":
         model_name = "berrybox_" + mod + "_openvino_model"
+        device = "cpu"
+    elif platform.system() == "Darwin":
+        device = "mps"
+        model_name = "berrybox_" + mod + ".pt"
     else:
         model_name = "berrybox_" + mod + ".pt"
 
@@ -272,6 +276,9 @@ def main():
         elif mod == "rot-det":
             confidence = 0.40
 
+    # Determine the device to use
+
+
     ## SET MODEL ARGUMENTS
     model_params = {
         'save': False, # save image results
@@ -286,7 +293,7 @@ def main():
         'half': True, # use FP16 half-precision inference True/False
         'cache': False, # use cache images for faster inference
         'retina_masks': False, #use high resolution seg mask
-        'device': "cpu", # cuda device, i.e. 0 or 0,1,2,3 or cpu
+        'device': device, # cuda device, i.e. 0 or 0,1,2,3 or cpu
         'verbose': args.verbose
     }
 
@@ -298,7 +305,7 @@ def main():
 
     if interactive:
         ## RUN THE CAPTURE PIPELINE ##
-        print("\nRunning berryboxai in interactive mode using the " + mod + "module...\n")
+        print("\nRunning berryboxai in interactive mode using the " + mod + " module...\n")
 
         # Main loop for capturing multiple images
         try:
@@ -442,7 +449,7 @@ def main():
 
     else:
         ## RUN THE BATCH PIPELINE ##
-        print("\nRunning berryboxai in batch mode using the " + mod + "module...\n")
+        print("\nRunning berryboxai in batch mode using the " + mod + " module...\n")
 
         # List images in the input directory
         image_list = os.listdir(input_dir)
