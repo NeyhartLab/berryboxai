@@ -1,2 +1,3 @@
 berryboxai/data/models/
 deprecated/
+*.DS_store
