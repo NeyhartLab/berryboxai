@@ -180,6 +180,23 @@ def save_ROI_boxes(image, results, class_names, output_path):
     cv2.imwrite(output_path, image1)
 
 
+# A function to convert model weights to openvino if using a Windows PC
+def convert_model_to_openvino(input_path):
+    # Load the YOLO model
+    model = YOLO(input_path)
+    # Check which module it is and assign image size
+    if "berry-seg" in input_path:
+        image_size = (1856, 2784)
+    elif "rot-det" in input_path:
+        image_size = (1600, 2400) 
+    
+    # Export the model to OpenVINO format
+    model.export(format='openvino', imgsz = image_size, half = True)
+    print("Model " + os.path.basename(input_path) + " converted to openvino format...")
+
+
+
+
 ## The main function
 def main():
     # Get arguments
@@ -266,23 +283,29 @@ def main():
         elif mod == "rot-det":
             confidence = 0.50
 
-    ## LOAD THE YOLO MODEL ##
+    ## LOAD AND CHECK THE YOLO MODEL ##
+    # This finds the model within the package structure
+    package_dir = pkg_resources.resource_filename('berryboxai', 'data')
+    
+    # If the platform is Windows, check that the openvino model exists;
+    # If it does not exist, convert it
     if platform.system() == "Windows":
         model_name = "berrybox_" + mod + "_openvino_model"
         device = "cpu"
+        model_path = os.path.join(package_dir, 'weights', model_name)
+        # If the path does not exist, convert the model
+        if not os.path.exists(model_path):
+            orig_model_name = model_name.replace("_openvino_model", ".pt")
+            orig_model_path = os.path.join(package_dir, 'weights', orig_model_name)
+            convert_model_to_openvino(orig_model_path)
     elif platform.system() == "Darwin":
         device = "mps"
         model_name = "berrybox_" + mod + ".pt"
     else:
         model_name = "berrybox_" + mod + ".pt"
-
-    # This finds the model within the package structure
-    package_dir = pkg_resources.resource_filename('berryboxai', 'data')
-    model_path = os.path.join(package_dir, 'weights', model_name)
+        device = "cpu"
 
     model = YOLO(model_path, task = task)
-
-
 
     ## SET MODEL ARGUMENTS
     model_params = {
