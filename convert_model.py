@@ -16,10 +16,8 @@ def convert_yolo_to_openvino(input_path):
     elif "rot-det" in input_path:
         image_size = (1600, 2400) 
     
-    # Determine output paths
-    base_name = os.path.splitext(os.path.basename(input_path))[0]
-    
     # Export the model to OpenVINO format
+    print("Converting model " + os.path.basename(input_path) + " to openvino format...")
     model.export(format='openvino', imgsz = image_size, half = True)
 
 def main():
