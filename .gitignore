@@ -1,3 +1,2 @@
-data/models/*openvino_model/
-data/models/*onnx
+berryboxai/data/models/*
 build/*
