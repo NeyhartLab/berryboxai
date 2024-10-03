@@ -11,7 +11,7 @@ decr_ = 'A command line tool for measuring quality traits from postharvest cranb
 
 setup(
     name=name_,
-    version='0.1.0',
+    version='0.1.0.012',
     author='Jeff Neyhart, Collins Wakholi',
     author_email='jeffneyhart.work@gmail.com',
     description=decr_,

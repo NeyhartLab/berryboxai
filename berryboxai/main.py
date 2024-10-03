@@ -217,9 +217,8 @@ def summarize_rot_det_results(results):
     # Calculate weighted percent rot based on the area of inscribed ellipse of each box
     # First calculate the areas of inscribed ellipses
     weights = []
-    xyxys = results[0].xyxy
-    for obj in xyxys:
-        xmin, ymin, xmax, ymax = obj[:4]  # Bounding box coordinates
+    for box in detected_boxes:
+        xmin, ymin, xmax, ymax = box.xyxy[:4]  # Bounding box coordinates
         # Calculate the width and height of the bounding box
         width = xmax - xmin
         height = ymax - ymin
