@@ -301,9 +301,11 @@ def main():
     elif platform.system() == "Darwin":
         device = "mps"
         model_name = "berrybox_" + mod + ".pt"
+        model_path = os.path.join(package_dir, 'weights', model_name)
     else:
         model_name = "berrybox_" + mod + ".pt"
         device = "cpu"
+        model_path = os.path.join(package_dir, 'weights', model_name)
 
     model = YOLO(model_path, task = task)
 
