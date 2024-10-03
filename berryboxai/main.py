@@ -199,8 +199,8 @@ def convert_model_to_openvino(input_path):
 # A function to summarize results from the rot object detection model
 def summarize_rot_det_results(results):
     # Get the boxes
-    detected_boxes = results[0].boxes
-    detected_classes = detected_boxes.cls.cpu().numpy()
+    detected_boxes = results[0].boxes.cpu()
+    detected_classes = detected_boxes.cls.numpy()
     objects_count = len(detected_classes)
     if objects_count == 0:
         print('\033[1;33mNo berries were found in the image!\033[0m')
@@ -217,8 +217,9 @@ def summarize_rot_det_results(results):
     # Calculate weighted percent rot based on the area of inscribed ellipse of each box
     # First calculate the areas of inscribed ellipses
     weights = []
-    for box in detected_boxes:
-        xmin, ymin, xmax, ymax = box.xyxy[:4]  # Bounding box coordinates
+    xyxys = detected_boxes.xyxy.numpy()
+    for obj in xyxys:
+        xmin, ymin, xmax, ymax = obj[:4]  # Bounding box coordinates
         # Calculate the width and height of the bounding box
         width = xmax - xmin
         height = ymax - ymin
