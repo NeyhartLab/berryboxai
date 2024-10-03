@@ -26,6 +26,7 @@ import cv2
 import argparse
 import pkg_resources
 import platform
+import math
 
 
 # options parsers
@@ -40,6 +41,7 @@ def options():
     parser.add_argument('--imgsz', help='Image size before sending it to the model', required = False, default = (0, 0))
     parser.add_argument('--save', help='Save the annotated images from the model output', default = False, action = 'store_true')
     parser.add_argument('--preview', help = 'Display a preview of the image with predicted features.', default = False, action = 'store_true')
+    parser.add_argument('--ext', help = 'Extension of the images to find in the "input" directory.', default = '.jpg', required = False)
     parser.add_argument('--verbose', help='Should model progress be printed to the terminal?', default = False, action = 'store_true')
     args = parser.parse_args()
     return args
@@ -194,6 +196,41 @@ def convert_model_to_openvino(input_path):
     model.export(format='openvino', imgsz = image_size, half = True)
     print("Model " + os.path.basename(input_path) + " converted to openvino format...")
 
+# A function to summarize results from the rot object detection model
+def summarize_rot_det_results(results):
+    # Get the boxes
+    detected_boxes = results[0].boxes
+    detected_classes = detected_boxes.cls.cpu().numpy()
+    objects_count = len(detected_classes)
+    if objects_count == 0:
+        print('\033[1;33mNo berries were found in the image!\033[0m')
+        return (0, 0, 0, 0, 0)
+
+    # Count rot
+    n_rotten = (detected_classes == 0).sum()
+    n_sound = (detected_classes == 1).sum()
+    n_total_berries = n_rotten + n_sound
+
+    # Calculate rot percent
+    perc_rot = round((n_rotten / n_total_berries) * 100, 3)
+
+    # Calculate weighted percent rot based on the area of inscribed ellipse of each box
+    # First calculate the areas of inscribed ellipses
+    weights = []
+    xyxys = results[0].xyxy
+    for obj in xyxys:
+        xmin, ymin, xmax, ymax = obj[:4]  # Bounding box coordinates
+        # Calculate the width and height of the bounding box
+        width = xmax - xmin
+        height = ymax - ymin
+        area = math.pi * (width / 2) * (height / 2)
+        weights.append(area)
+
+    values = [1 - x for x in detected_classes]
+    weighted_sum = sum(v * w for v, w in zip(values, weights))
+    weighted_perc_rot = round((weighted_sum / sum(weights)) * 100, 3)
+
+    return (n_total_berries, n_rotten, n_sound, perc_rot, weighted_perc_rot)
 
 
 
@@ -426,18 +463,12 @@ def main():
 
                 # DIFFERENT PROCESS FOR ROT DETECTION #
                 elif (mod == "rot-det"):
-                    # Get the boxes
-                    detected_boxes = results[0].boxes
-                    detected_classes = detected_boxes.cls.cpu().numpy()
-                    objects_count = len(detected_classes)
+                    # Summarize results
+                    objects_count, n_rotten, n_sound, perc_rot, weighted_perc_rot = summarize_rot_det_results(results)
                     # If indeces is length 0; warn that no berries were found
                     if objects_count == 0:
                         print('\033[1;33mNo berries were found in the image!\033[0m')
                         continue
-
-                    # Count rot
-                    n_rotten = (detected_classes == 0).sum()
-                    n_sound = (detected_classes == 1).sum()
 
                     # 7. Save results (image name, date, barcode, object count) to CSV
                     image_name = local_image_path.split("/")[-1]
@@ -448,7 +479,8 @@ def main():
                         'QR_info': barcode,
                         'NumberSoundBerries': n_sound,
                         'NumberRottenBerries': n_rotten,
-                        'FruitRotPer': round((n_rotten / (n_rotten + n_sound) * 100), 3)
+                        'FruitRotPer': perc_rot,
+                        'FruitRotPerWtd': weighted_perc_rot
                     }
                     df = pd.DataFrame(data, index = [0])
 
@@ -482,12 +514,14 @@ def main():
         print("\nRunning berryboxai in batch mode using the " + mod + " module...\n")
 
         # List images in the input directory
+        image_extension = args.ext
+        image_extension = image_extension.upper()
         image_list = os.listdir(input_dir)
-        image_path_list = [os.path.join(input_dir, x) for x in image_list if ".JPG" in x.upper()]
+        image_path_list = [os.path.join(input_dir, x) for x in image_list if image_extension in x.upper()]
 
         # Print the number of images found
         print("Using images from the directory: " + input_dir)
-        print("Discovered " + str(len(image_list)) + " images in the directory")
+        print("Discovered " + str(len(image_path_list)) + " images in the directory")
         print("Running the deep learning model on the images...\n")
 
         # Iterate over images
@@ -559,18 +593,12 @@ def main():
 
             # DIFFERENT PROCESS FOR ROT DETECTION #
             elif (mod == "rot-det"):
-                # Get the boxes
-                detected_boxes = results[0].boxes
-                detected_classes = detected_boxes.cls.cpu().numpy()
-                objects_count = len(detected_classes)
+                # Summarize results
+                objects_count, n_rotten, n_sound, perc_rot, weighted_perc_rot = summarize_rot_det_results(results)
                 # If indeces is length 0; warn that no berries were found
                 if objects_count == 0:
                     print('\033[1;33mNo berries were found in the image!\033[0m')
                     continue
-
-                # Count rot
-                n_rotten = (detected_classes == 0).sum()
-                n_sound = (detected_classes == 1).sum()
 
                 # 7. Save results (image name, date, barcode, object count) to CSV
                 image_name = local_image_path.split("/")[-1]
@@ -579,7 +607,8 @@ def main():
                     'Image Name': image_name,
                     'NumberSoundBerries': n_sound,
                     'NumberRottenBerries': n_rotten,
-                    'FruitRotPer': round((n_rotten / (n_rotten + n_sound) * 100), 3)
+                    'FruitRotPer': perc_rot,
+                    'FruitRotPerWtd': weighted_perc_rot
                 }
                 df = pd.DataFrame(data, index = [0])
 
