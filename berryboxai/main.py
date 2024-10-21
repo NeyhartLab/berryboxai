@@ -117,7 +117,7 @@ def display_image_with_masks(image, results, class_names, show_masks = True):
         class_id = int(class_ids[i])
         # Create a colored mask if called for
         if show_masks:
-            color = colors[class_id+1]
+            color = colors[class_id]
             mask = masks[i]
             colored_mask = np.zeros_like(image, dtype=np.uint8)
             for c in range(3):  # Apply color to each channel
@@ -459,7 +459,9 @@ def main():
                     # Show a preview of the result
                     if args.preview:
                         print("Close the preview window before proceeding to the next sample.")
-                        display_image_with_masks(image = image, results = results, class_names = ["color_card", "berry", "rotten"])
+                        # display_image_with_masks(image = image, results = results, class_names = ["ColorCard", "berry", "rotten"])
+                        display_image_with_masks(image = image, results = results, class_names = ["ColorCard", "berry", "info"])
+
 
                 # DIFFERENT PROCESS FOR ROT DETECTION #
                 elif (mod == "rot-det"):
