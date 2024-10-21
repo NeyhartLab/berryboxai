@@ -5,3 +5,4 @@ gui_test2.py
 berryboxai/main_gui.py
 build/
 *.egg-info
+testing/*

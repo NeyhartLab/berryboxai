@@ -27,11 +27,9 @@ ocr_reader = Reader(['en'], gpu=True)
 Functions to compute the features
 ------------------------------------------------------------------------------------
 """ 
-def color_correction(
-    result: Results,
-    show: bool = False
-) -> Tuple[Results, Tuple[float, float]]: 
-    print('\nColor correcting the image...\n')
+def color_correction(result: Results, show: bool = False, verbose: bool = False) -> Tuple[Results, Tuple[float, float]]: 
+    if verbose:
+        print('\nColor correcting the image...\n')
     orig_img = result.orig_img
 
     id_cc = get_ids(result, 'ColorCard')[0]
@@ -62,7 +60,8 @@ def color_correction(
     # corrected_img = cc.Parallel_correct_img(orig_img, show=show, chunks_=900000)
     
     result.orig_img = corrected_img
-    print('\nColor correction complete.\n')
+    if verbose:
+        print('\nColor correction complete.\n')
 
     return result, patch_size
 

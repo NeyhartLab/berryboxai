@@ -403,7 +403,7 @@ def main():
                 image = cv2.imread(local_image_path)
                 image = cv2.resize(image, (newW, newH))
                 results = model.predict(source = image, **model_params)
-                result = results[0]
+                result = results[0].to("cpu")
 
                 print("Processing and saving model results...")
                 ## PROCESS RESULTS DEPENDING ON THE MODULE ##
@@ -518,10 +518,11 @@ def main():
         image_extension = image_extension.upper()
         image_list = os.listdir(input_dir)
         image_path_list = [os.path.join(input_dir, x) for x in image_list if image_extension in x.upper()]
+        n_images = len(image_path_list)
 
         # Print the number of images found
         print("Using images from the directory: " + input_dir)
-        print("Discovered " + str(len(image_path_list)) + " images in the directory")
+        print("Discovered " + str(n_images) + " images in the directory")
         print("Running the deep learning model on the images...\n")
 
         # Iterate over images
@@ -532,7 +533,7 @@ def main():
             image = cv2.imread(local_image_path)
             image = cv2.resize(image, (newW, newH))
             results = model.predict(source = image, **model_params)
-            result = results[0]
+            result = results[0].to("cpu")
 
             ## PROCESS RESULTS DEPENDING ON THE MODULE ##
             if (mod == "berry-seg"):
@@ -626,7 +627,7 @@ def main():
                 if save_predictions:
                     save_ROI_boxes(image = image, results = results, class_names = ["rotten", "sound"], output_path = os.path.join(img_save_folder, image_name))
 
-            print(f"Image {p + 1} of {len(image_list)} processed.\n")
+            print(f"Image {p + 1} of {n_images} processed.\n")
 
         print("\nAll images processed. Results are saved in " + img_save_folder)   
 
