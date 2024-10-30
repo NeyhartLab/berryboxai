@@ -41,9 +41,7 @@ def color_correction(result: Results, show: bool = False, verbose: bool = False)
         plt.title('Color card')
         plt.show()
 
-    cc = ColorCorrectionML(img=img,
-                            chart='Classic',
-                            illuminant='D50')
+    cc = ColorCorrectionML(img=img, chart='Classic', illuminant='D50')
     
     kwargs = {
         'method': 'pls', #'linear', 'lstsq', 'pls'
@@ -65,10 +63,7 @@ def color_correction(result: Results, show: bool = False, verbose: bool = False)
 
     return result, patch_size
 
-def read_QR_code(result: Results,
-                 show: bool = False,
-                 name: str = "info",
-                 ) -> str:
+def read_QR_code(result: Results, show: bool = False, name: str = "info" ) -> str:
     print('\nReading QR code...\n')
     QR_info = ''
     ids = get_ids(result, name)
@@ -337,15 +332,14 @@ def process_image(img: np.ndarray,
     RP = region_properties([poly])
     return pd.concat([RP, other_feats, lab_feats], axis=1)
 
-def get_all_features(results: Results,
-                        name: str = 'Hops'
-                        ) -> pd.DataFrame:
+def get_all_features(results: Results, name: str = 'Hops', verbose = False ) -> pd.DataFrame:
+    disable = not verbose
     All_feat = pd.DataFrame()
     ids = get_ids(results, name)
     Imgs, Polys = extract_ROI(results, ids)
     prefixes = ['Blue', 'Green', 'Red']
 
-    pbar = tqdm(Imgs.items(), total=len(Imgs), desc='Extracting features')
+    pbar = tqdm(Imgs.items(), total=len(Imgs), desc='Extracting features', disable = disable)
     for key, img in Imgs.items():
         poly = Polys[key]
         poly = np.array(poly)
@@ -358,9 +352,8 @@ def get_all_features(results: Results,
     pbar.close()
     return All_feat
 
-def get_all_features_parallel(results: Results,
-                        name: str = 'Hops'
-                        ) -> pd.DataFrame:
+def get_all_features_parallel(results: Results, name: str = 'Hops', verbose = False) -> pd.DataFrame:
+    disable = not verbose
     All_feat = pd.DataFrame()
     ids = get_ids(results, name)
     Imgs, Polys = extract_ROI(results, ids)
@@ -368,7 +361,7 @@ def get_all_features_parallel(results: Results,
 
     with ThreadPoolExecutor() as executor:
         futures = [executor.submit(process_image, img, poly, prefixes) for img, poly in zip(Imgs.values(), Polys.values())]
-        for future in tqdm(futures, total=len(futures), desc='Extracting features'):
+        for future in tqdm(futures, total=len(futures), desc='Extracting features', disable=disable):
             All_feat = pd.concat([All_feat, future.result()], axis=0, ignore_index=True)
 
     return All_feat

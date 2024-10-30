@@ -12,7 +12,7 @@
 
 # Import packages here
 from .functions import * # load all functions
-from ultralytics import YOLO
+# from ultralytics import YOLO
 import os
 import torch
 import gc
@@ -102,7 +102,7 @@ def get_time():
     return str(ct)
 
 # Function to display image with YOLO segmentation masks
-def display_image_with_masks(image, results, class_names, show_masks = True):
+def display_image_with_masks(image, results, class_names, show_masks = True, output_path = "", save = False):
 
     # Get the masks, boxes, and classes from the results
     if show_masks:
@@ -137,22 +137,28 @@ def display_image_with_masks(image, results, class_names, show_masks = True):
         label = f'{class_name}, Conf: {confidences[i]:.2f}'
         cv2.putText(image, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
-    # Resize the image for a smaller preview
-    og_h, og_w = image.shape[:2]
-    new_h = int(og_h * 0.5)
-    new_w = int(og_w * 0.5)
-    image = cv2.resize(image, (new_w, new_h))
 
-    # Display the image in a window
-    window_name = "Predictions"
-    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-    cv2.setWindowProperty(window_name, cv2.WND_PROP_TOPMOST, 1)
-    cv2.imshow(window_name, image)
-    # cv2.resizeWindow("Predictions", new_w, new_h)
+    if save:
+        cv2.imwrite(output_path, image)
 
-    # Wait for a key press and close the window
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+    else:
+        # Resize the image for a smaller preview
+        og_h, og_w = image.shape[:2]
+        new_h = int(og_h * 0.5)
+        new_w = int(og_w * 0.5)
+        image = cv2.resize(image, (new_w, new_h))
+
+        # Display the image in a window
+        window_name = "Predictions"
+        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+        cv2.setWindowProperty(window_name, cv2.WND_PROP_TOPMOST, 1)
+        cv2.imshow(window_name, image)
+        # cv2.resizeWindow("Predictions", new_w, new_h)
+
+        # Wait for a key press and close the window
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
+
 
 def save_ROI_boxes(image, results, class_names, output_path):
     image1 = image
@@ -236,6 +242,10 @@ def summarize_rot_det_results(results):
 
 ## The main function
 def main():
+
+    # Load YOLO library
+    from ultralytics import YOLO
+
     # Get arguments
     args = options()
     # Determine the module
@@ -454,7 +464,9 @@ def main():
                     # Save the image with predicted annotations, if requested
                     # THIS WILL NEED TO BE CHANGED FOR ROT DETECTION
                     if save_predictions:
-                        save_ROI_parallel(result, get_ids(result, 'berry'), os.path.join(img_save_folder, image_name_vec[0]))
+                        display_image_with_masks(image = image, results = results, class_names = ["ColorCard", "berry", "info"], 
+                                                 output_path = os.path.join(img_save_folder, image_name_vec[0]), save = True)
+                        # save_ROI_parallel(result, get_ids(result, 'berry'), os.path.join(img_save_folder, image_name_vec[0]))
 
                     # Show a preview of the result
                     if args.preview:
@@ -591,7 +603,9 @@ def main():
                 # Save the image with predicted annotations, if requested
                 # THIS WILL NEED TO BE CHANGED FOR ROT DETECTION
                 if save_predictions:
-                    save_ROI_parallel(result, get_ids(result, 'berry'), os.path.join(img_save_folder, image_name_vec[0]))
+                    display_image_with_masks(image = image, results = results, class_names = ["ColorCard", "berry", "info"], 
+                                             output_path = os.path.join(img_save_folder, image_name_vec[0]), save = True)
+                    # save_ROI_parallel(result, get_ids(result, 'berry'), os.path.join(img_save_folder, image_name_vec[0]))
 
 
             # DIFFERENT PROCESS FOR ROT DETECTION #
