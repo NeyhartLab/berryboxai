@@ -107,7 +107,7 @@ def display_image_with_masks(image, results, class_names, show_masks = True, out
     # Get the masks, boxes, and classes from the results
     if show_masks:
         masks = results[0].masks.data.cpu().numpy()  # Segmentation masks
-    colors = [(0, 255, 0), (255, 0, 0)]  # Green for class 0, Red for class 1
+    colors = [(0, 255, 0), (255, 0, 0), (0, 0, 255)]  # Green for class 0, Red for class 1
     boxes = results[0].boxes.xyxy.cpu().numpy()  # Bounding boxes
     class_ids = results[0].boxes.cls.cpu().numpy()  # Class IDs
     confidences = results[0].boxes.conf.cpu().numpy()  # Confidence scores
