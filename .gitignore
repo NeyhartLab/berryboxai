@@ -6,3 +6,4 @@ berryboxai/main_gui.py
 build/
 *.egg-info
 testing/*
+deprecated/*

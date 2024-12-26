@@ -27,6 +27,7 @@ import argparse
 import pkg_resources
 import platform
 import math
+import ast
 
 
 # options parsers
@@ -42,6 +43,7 @@ def options():
     parser.add_argument('--save', help='Save the annotated images from the model output', default = False, action = 'store_true')
     parser.add_argument('--preview', help = 'Display a preview of the image with predicted features.', default = False, action = 'store_true')
     parser.add_argument('--ext', help = 'Extension of the images to find in the "input" directory.', default = '.jpg', required = False)
+    parser.add_argument('--overwrite', help = 'Overwrite the existing output file, if present.', default = False, action = 'store_true')
     parser.add_argument('--verbose', help='Should model progress be printed to the terminal?', default = False, action = 'store_true')
     args = parser.parse_args()
     return args
@@ -102,15 +104,17 @@ def get_time():
     return str(ct)
 
 # Function to display image with YOLO segmentation masks
-def display_image_with_masks(image, results, class_names, show_masks = True, output_path = "", save = False):
+def display_image_with_masks(image, result, class_names, show_masks = True, output_path = "", save = False):
 
     # Get the masks, boxes, and classes from the results
     if show_masks:
-        masks = results[0].masks.data.cpu().numpy()  # Segmentation masks
+        masks = result.masks.data.numpy()  # Segmentation masks
     colors = [(0, 255, 0), (255, 0, 0), (0, 0, 255)]  # Green for class 0, Red for class 1
-    boxes = results[0].boxes.xyxy.cpu().numpy()  # Bounding boxes
-    class_ids = results[0].boxes.cls.cpu().numpy()  # Class IDs
-    confidences = results[0].boxes.conf.cpu().numpy()  # Confidence scores
+    # Generate random colors for each mask
+    colors = {k: colors[i] for i, k in enumerate(class_names)}
+    boxes = result.boxes.xyxy.numpy()  # Bounding boxes
+    class_ids = result.boxes.cls.numpy()  # Class IDs
+    confidences = result.boxes.conf.numpy()  # Confidence scores
 
     # Display boxes or masks
     for i, box in enumerate(boxes):
@@ -133,7 +137,7 @@ def display_image_with_masks(image, results, class_names, show_masks = True, out
         cv2.rectangle(image, (x1, y1), (x2, y2), color, 2)
 
         # Draw the class label and confidence score
-        class_name = class_names[class_id]
+        class_name = result.names[class_id]
         label = f'{class_name}, Conf: {confidences[i]:.2f}'
         cv2.putText(image, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
@@ -160,27 +164,28 @@ def display_image_with_masks(image, results, class_names, show_masks = True, out
         cv2.destroyAllWindows()
 
 
-def save_ROI_boxes(image, results, class_names, output_path):
+def save_ROI_boxes(image, result, class_names, output_path):
     image1 = image
     # Get the masks, boxes, and classes from the results
-    boxes = results[0].boxes.xyxy.cpu().numpy()  # Bounding boxes
-    class_ids = results[0].boxes.cls.cpu().numpy()  # Class IDs
-    confidences = results[0].boxes.conf.cpu().numpy()  # Confidence scores
+    boxes = result.boxes.xyxy.numpy()  # Bounding boxes
+    class_ids = result.boxes.cls.numpy()  # Class IDs
+    confidences = result.boxes.conf.numpy()  # Confidence scores
 
     # Generate random colors for each mask
     colors = [(0, 255, 0), (255, 0, 0)]  # Green for class 0, Red for class 1
+    colors = {k: colors[i] for i, k in enumerate(class_names)}
 
     # Display boxes or masks
     for i, box in enumerate(boxes):
         class_id = int(class_ids[i])
-        color = colors[class_id]
+        class_name = result.names[class_id]
+        color = colors[class_name]
 
         # Draw the bounding box around the object
         x1, y1, x2, y2 = map(int, boxes[i])
         cv2.rectangle(image1, (x1, y1), (x2, y2), color, 2)
 
         # Draw the class label and confidence score
-        class_name = class_names[int(class_ids[i])]
         label = f'{class_name}, Conf: {confidences[i]:.2f}'
         cv2.putText(image1, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
@@ -203,18 +208,23 @@ def convert_model_to_openvino(input_path):
     print("Model " + os.path.basename(input_path) + " converted to openvino format...")
 
 # A function to summarize results from the rot object detection model
-def summarize_rot_det_results(results):
+def summarize_rot_det_results(result):
+    # Find the class integers corresponding to the classes
+    class_names = ["rotten", "sound"]
+    results_names = {v: k for k, v in result.names.items()}
+
     # Get the boxes
-    detected_boxes = results[0].boxes.cpu()
+    detected_boxes = result.boxes
     detected_classes = detected_boxes.cls.numpy()
     objects_count = len(detected_classes)
     if objects_count == 0:
         print('\033[1;33mNo berries were found in the image!\033[0m')
         return (0, 0, 0, 0, 0)
 
-    # Count rot
-    n_rotten = (detected_classes == 0).sum()
-    n_sound = (detected_classes == 1).sum()
+    # Count sound and rot
+    class_counts = {x: (detected_classes == results_names[x]).sum() for x in class_names}
+    n_rotten = class_counts["rotten"]
+    n_sound = class_counts["sound"]
     n_total_berries = n_rotten + n_sound
 
     # Calculate rot percent
@@ -232,7 +242,7 @@ def summarize_rot_det_results(results):
         area = math.pi * (width / 2) * (height / 2)
         weights.append(area)
 
-    values = [1 - x for x in detected_classes]
+    values = [1 if x == results_names["rotten"] else 0 for x in detected_classes]
     weighted_sum = sum(v * w for v, w in zip(values, weights))
     weighted_perc_rot = round((weighted_sum / sum(weights)) * 100, 3)
 
@@ -242,9 +252,6 @@ def summarize_rot_det_results(results):
 
 ## The main function
 def main():
-
-    # Load YOLO library
-    from ultralytics import YOLO
 
     # Get arguments
     args = options()
@@ -256,7 +263,6 @@ def main():
         interactive = True
     else:
         interactive = False
-
 
     # Create a session name
     session_name = "berrybox" + "_" + mod + "_" + get_date()
@@ -305,6 +311,8 @@ def main():
 
     # Create the filename to save the features
     output_feature_filename = output_dir + "/" + session_name + "_features.csv"
+    if os.path.exists(output_feature_filename) & args.overwrite:
+        os.remove(output_feature_filename)
     
     ## SET MODULE-SPECIFIC SETTINGS ##
     if mod == "berry-seg":
@@ -321,6 +329,8 @@ def main():
             image_size = (1856, 2784)
         elif mod == "rot-det":
             image_size = (1600, 2400)
+    else:
+        image_size = ast.literal_eval(image_size)
 
     # Set confidence
     confidence = float(args.conf)
@@ -333,6 +343,9 @@ def main():
     ## LOAD AND CHECK THE YOLO MODEL ##
     # This finds the model within the package structure
     package_dir = pkg_resources.resource_filename('berryboxai', 'data')
+
+    # Load the ultralytics library
+    from ultralytics import YOLO
     
     # If the platform is Windows, check that the openvino model exists;
     # If it does not exist, convert it
@@ -345,15 +358,15 @@ def main():
             orig_model_name = model_name.replace("_openvino_model", ".pt")
             orig_model_path = os.path.join(package_dir, 'weights', orig_model_name)
             convert_model_to_openvino(orig_model_path)
-    elif platform.system() == "Darwin":
-        device = "mps"
-        model_name = "berrybox_" + mod + ".pt"
-        model_path = os.path.join(package_dir, 'weights', model_name)
     else:
         model_name = "berrybox_" + mod + ".pt"
-        device = "cpu"
         model_path = os.path.join(package_dir, 'weights', model_name)
+        if platform.system() == "Darwin":
+            device = "mps"
+        else:
+            device = "cpu"
 
+    # Load the model
     model = YOLO(model_path, task = task)
 
     ## SET MODEL ARGUMENTS
@@ -413,6 +426,7 @@ def main():
                 image = cv2.imread(local_image_path)
                 image = cv2.resize(image, (newW, newH))
                 results = model.predict(source = image, **model_params)
+                # Map results to cpu
                 result = results[0].to("cpu")
 
                 print("Processing and saving model results...")
@@ -478,7 +492,7 @@ def main():
                 # DIFFERENT PROCESS FOR ROT DETECTION #
                 elif (mod == "rot-det"):
                     # Summarize results
-                    objects_count, n_rotten, n_sound, perc_rot, weighted_perc_rot = summarize_rot_det_results(results)
+                    objects_count, n_rotten, n_sound, perc_rot, weighted_perc_rot = summarize_rot_det_results(result)
                     # If indeces is length 0; warn that no berries were found
                     if objects_count == 0:
                         print('\033[1;33mNo berries were found in the image!\033[0m')
@@ -510,7 +524,7 @@ def main():
                     print(f"Image {image_name} captured, processed, and features saved with {n_sound} sound berries and {n_rotten} rotten berries detected.\n\n")
 
                     if save_predictions:
-                        save_ROI_boxes(image = image, results = results, class_names = ["rotten", "sound"], output_path = os.path.join(img_save_folder, image_name))
+                        save_ROI_boxes(image = image, result = result, class_names = ["rotten", "sound"], output_path = os.path.join(img_save_folder, image_name))
 
                     # Show a preview of the result
                     if args.preview:
@@ -547,6 +561,7 @@ def main():
             image = cv2.imread(local_image_path)
             image = cv2.resize(image, (newW, newH))
             results = model.predict(source = image, **model_params)
+            # Map results to cpu
             result = results[0].to("cpu")
 
             ## PROCESS RESULTS DEPENDING ON THE MODULE ##
@@ -611,7 +626,7 @@ def main():
             # DIFFERENT PROCESS FOR ROT DETECTION #
             elif (mod == "rot-det"):
                 # Summarize results
-                objects_count, n_rotten, n_sound, perc_rot, weighted_perc_rot = summarize_rot_det_results(results)
+                objects_count, n_rotten, n_sound, perc_rot, weighted_perc_rot = summarize_rot_det_results(result)
                 # If indeces is length 0; warn that no berries were found
                 if objects_count == 0:
                     print('\033[1;33mNo berries were found in the image!\033[0m')
@@ -641,7 +656,7 @@ def main():
                 print(f"Image {image_name} processed, and features saved with {n_sound} sound berries and {n_rotten} rotten berries detected.")
 
                 if save_predictions:
-                    save_ROI_boxes(image = image, results = results, class_names = ["rotten", "sound"], output_path = os.path.join(img_save_folder, image_name))
+                    save_ROI_boxes(image = image, result = result, class_names = ["rotten", "sound"], output_path = os.path.join(img_save_folder, image_name))
 
             print(f"Image {p + 1} of {n_images} processed.\n")
 
