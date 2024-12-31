@@ -40,6 +40,8 @@ def options():
     parser.add_argument('--output', help='The directory to store the data output', required = True)
     parser.add_argument('--conf', help='Confidence level for segmenting or detecting objects from the model', required = False, default = 0)
     parser.add_argument('--imgsz', help='Image size before sending it to the model', required = False, default = (0, 0))
+    parser.add_argument('--reduce-features', help='Save only the Area, Length, Width, Volume, Eccentricity, Red, Green, Blue, L*, a*, b*', default=False, action='store_true')
+    parser.add_argument('--patch-size', help='The size (in cm) of the length/width of the patches in the ColorCard', required = False, default = 1.2)
     parser.add_argument('--save', help='Save the annotated images from the model output', default = False, action = 'store_true')
     parser.add_argument('--preview', help = 'Display a preview of the image with predicted features.', default = False, action = 'store_true')
     parser.add_argument('--ext', help = 'Extension of the images to find in the "input" directory.', default = '.jpg', required = False)
@@ -116,12 +118,20 @@ def display_image_with_masks(image, result, class_names, show_masks = True, outp
     class_ids = result.boxes.cls.numpy()  # Class IDs
     confidences = result.boxes.conf.numpy()  # Confidence scores
 
+    # Sort bounding boxes by top-to-bottom, left-to-right (row-major order)
+    sorted_indices = sorted(
+        range(len(boxes)),
+        key=lambda i: (boxes[i][1], boxes[i][0])  # Sort by y1 (top) first, then x1 (left)
+    )
+
     # Display boxes or masks
-    for i, box in enumerate(boxes):
+    for rank, i in enumerate(sorted_indices, start=1):  # Start numbering from 1
+        box = boxes[i]
         class_id = int(class_ids[i])
+        class_name = result.names[class_id]
+        color = colors[class_name]
         # Create a colored mask if called for
         if show_masks:
-            color = colors[class_id]
             mask = masks[i]
             colored_mask = np.zeros_like(image, dtype=np.uint8)
             for c in range(3):  # Apply color to each channel
@@ -129,8 +139,7 @@ def display_image_with_masks(image, result, class_names, show_masks = True, outp
 
             # Blend the colored mask with the original image
             image = cv2.addWeighted(image, 1, colored_mask, 0.5, 0)
-        else:
-            color = colors[class_id]
+
 
         # Draw the bounding box around the object
         x1, y1, x2, y2 = map(int, boxes[i])
@@ -138,7 +147,7 @@ def display_image_with_masks(image, result, class_names, show_masks = True, outp
 
         # Draw the class label and confidence score
         class_name = result.names[class_id]
-        label = f'{class_name}, Conf: {confidences[i]:.2f}'
+        label = f'Object {rank}: {class_name}, Conf: {confidences[i]:.2f}'
         cv2.putText(image, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
 
@@ -393,6 +402,9 @@ def main():
     # Date for printing
     current_date = get_date()
 
+    # Patch size placeholder
+    patch_size_use = 0
+
     if interactive:
         ## RUN THE CAPTURE PIPELINE ##
         print("\nRunning berryboxai in interactive mode using the " + mod + " module...\n")
@@ -436,8 +448,15 @@ def main():
                     # Try color correction; skip if it doesn't work
                     try:
                         result, patch_size = color_correction(result)
+                        patch_size = np.min(patch_size)
                     except:
                         continue
+
+                    # Update the patch size
+                    if patch_size > 0:
+                        if patch_size < patch_size_use or patch_size_use == 0:
+                            patch_size_use = patch_size
+
 
                     # Get features
                     df1 = get_all_features_parallel(result, name= 'berry')
@@ -445,7 +464,7 @@ def main():
                     df = pd.concat([pd.DataFrame({'name': (['berry'] * df1.shape[0]) + (['rotten'] * df2.shape[0])}), pd.concat([df1, df2], ignore_index = True)], axis = 1)    
                     w,_ = df.shape
                     image_name_vec = [image_name]*w
-                    patch_size = [np.mean(patch_size)]*w
+                    patch_size_vec = [patch_size]*w
                     indeces = list(range(w))
                     # If indeces is length 0; warn that no berries were found
                     if len(indeces) == 0:
@@ -458,11 +477,22 @@ def main():
                         'Image Name': image_name_vec,
                         'QR_info': barcode,
                         'Object_ID': indeces,
-                        'Patch_size': patch_size
+                        'Patch_size': patch_size_vec
                     }
                     df_fore = pd.DataFrame(data)
                     # Combine with the features
                     df = pd.concat([df_fore, df], axis=1)
+
+                    ## Calculate additional features
+                    # Volume
+                    df["Ellipsoid_model_volume"] = (4/3) * np.pi * (df["RP_Minor_axis_length"] / 2) * ((df["RP_Major_axis_length"] / 2) ** 2)
+                    # Eccentricity
+                    df["Eccentricity"] = np.sqrt(1 - ((0.5 * df["RP_Major_axis_length"]) ** 2 / (0.5 * df["RP_Minor_axis_length"]) ** 2))
+
+                    # Assign the berry ID by sorting on bounding box coordinates
+                    df = df.sort_values(by=["RP_BB_y", "RP_BB_x"])
+                    df = df.reset_index(drop=True)
+                    df["Object_ID"] = df.index
 
                     # Append to CSV if it exists
                     try:
@@ -533,6 +563,32 @@ def main():
 
 
         finally:
+            # Modify the output data frame for berry seg
+            if mod == "berry-seg":
+                # Read the df back in
+                df = pd.read_csv(output_feature_filename)
+
+                # Convert features to cm and rename
+                # Use the final patch size to calculate pixels to cm
+                cm_per_pixel = float(args.patch_size) / patch_size_use
+                df["Area"] = df["RP_Area"] * (cm_per_pixel ** 2)
+                df["Length"] = df["RP_Minor_axis_length"] * cm_per_pixel
+                df["Width"] = df["RP_Major_axis_length"] * cm_per_pixel
+                df["Ellipsoid_model_volume"] = df["Ellipsoid_model_volume"] * (cm_per_pixel ** 3)
+                df["cm_per_pixel"] = cm_per_pixel
+
+                ## Subset features
+                if args.reduce_features:
+                    features_select = ["Date", "Image Name", "QR_info", "Object_ID", "Patch_size", "name", "Area", "Length", "Width", "Ellipsoid_model_volume", "Eccentricity", "Red_Color_Mean", "Red_Color_Median", "Red_Color_Std", "Green_Color_Mean", "Green_Color_Median", "Green_Color_Std", "Blue_Color_Mean", "Blue_Color_Median", "Blue_Color_Std", "L_Color_Mean", "L_Color_Median", "L_Color_Std", "a_Color_Mean", "a_Color_Median", "a_Color_Std", "b_Color_Mean", "b_Color_Median", "b_Color_Std"]
+                    df = df[features_select]
+                else:
+                    features_drop = ["RP_Area", "RP_Major_axis_length", "RP_Minor_axis_length"]
+                    df = df.drop(columns = features_drop)
+                
+                # Save the df
+                df.to_csv(output_feature_filename, index=False)
+
+
             # Ensure the SSH connection is closed at the end
             ssh.close()
             print("SSH connection closed.")
@@ -565,13 +621,20 @@ def main():
             result = results[0].to("cpu")
 
             ## PROCESS RESULTS DEPENDING ON THE MODULE ##
-            if (mod == "berry-seg"):
+            if mod == "berry-seg":
                 # 6. Process the results
                 # Try color correction; skip if it doesn't work
                 try:
                     result, patch_size = color_correction(result)
+                    patch_size = np.min(patch_size)
+
                 except:
                     continue
+
+                # Update the patch size
+                if patch_size > 0:
+                    if patch_size < patch_size_use or patch_size_use == 0:
+                        patch_size_use = patch_size
 
                 # Was "info" found?
                 if any(result.boxes.cls == get_ids(result, 'info')[0]):
@@ -586,7 +649,7 @@ def main():
                 df = pd.concat([pd.DataFrame({'name': (['berry'] * df1.shape[0]) + (['rotten'] * df2.shape[0])}), pd.concat([df1, df2], ignore_index = True)], axis = 1)    
                 w,_ = df.shape
                 image_name_vec = [image_name]*w
-                patch_size = [np.mean(patch_size)]*w
+                patch_size_vec = [np.mean(patch_size)]*w
                 indeces = list(range(w))
                 # If indeces is length 0; warn that no berries were found
                 if len(indeces) == 0:
@@ -595,14 +658,26 @@ def main():
 
                 # 7. Save results (image name, date, barcode, object count) to CSV
                 data = {
+                    'Date': current_date,
                     'Image Name': image_name_vec,
                     'QR_info': barcode,
                     'Object_ID': indeces,
-                    'Patch_size': patch_size
+                    'Patch_size': patch_size_vec
                 }
                 df_fore = pd.DataFrame(data)
                 # Combine with the features
                 df = pd.concat([df_fore, df], axis=1)
+
+                ## Calculate additional features
+                # Volume
+                df["Ellipsoid_model_volume"] = (4/3) * np.pi * (df["RP_Minor_axis_length"] / 2) * ((df["RP_Major_axis_length"] / 2) ** 2)
+                # Eccentricity
+                df["Eccentricity"] = np.sqrt(1 - ((0.5 * df["RP_Major_axis_length"]) ** 2 / (0.5 * df["RP_Minor_axis_length"]) ** 2))
+
+                # Assign the berry ID by sorting on bounding box coordinates
+                df = df.sort_values(by=["RP_BB_y", "RP_BB_x"])
+                df = df.reset_index(drop=True)
+                df["Object_ID"] = df.index
 
                 # Append to CSV if it exists
                 try:
@@ -660,7 +735,34 @@ def main():
 
             print(f"Image {p + 1} of {n_images} processed.\n")
 
-        print("\nAll images processed. Results are saved in " + img_save_folder)   
+        print("\nAll images processed. Results are saved in " + img_save_folder)
+
+        # Modify the output data frame for berry seg
+        if mod == "berry-seg":
+            # Read the df back in
+            df = pd.read_csv(output_feature_filename)
+
+            # Convert features to cm and rename
+            # Use the final patch size to calculate pixels to cm
+            cm_per_pixel = float(args.patch_size) / patch_size_use
+            df["Area"] = df["RP_Area"] * (cm_per_pixel ** 2)
+            df["Length"] = df["RP_Minor_axis_length"] * cm_per_pixel
+            df["Width"] = df["RP_Major_axis_length"] * cm_per_pixel
+            df["Ellipsoid_model_volume"] = df["Ellipsoid_model_volume"] * (cm_per_pixel ** 3)
+            df["cm_per_pixel"] = cm_per_pixel
+
+
+            ## Subset features
+            if args.reduce_features:
+                features_select = ["Date", "Image Name", "QR_info", "Object_ID", "Patch_size", "name", "Area", "Length", "Width", "Ellipsoid_model_volume", "Eccentricity", "Red_Color_Mean", "Red_Color_Median", "Red_Color_Std", "Green_Color_Mean", "Green_Color_Median", "Green_Color_Std", "Blue_Color_Mean", "Blue_Color_Median", "Blue_Color_Std", "L_Color_Mean", "L_Color_Median", "L_Color_Std", "a_Color_Mean", "a_Color_Median", "a_Color_Std", "b_Color_Mean", "b_Color_Median", "b_Color_Std"]
+                df = df[features_select]
+            else:
+                features_drop = ["RP_Area", "RP_Major_axis_length", "RP_Minor_axis_length"]
+                df = df.drop(columns = features_drop)
+            
+            # Save the df
+            df.to_csv(output_feature_filename, index=False)
+   
 
 # Runs main function
 if __name__ == '__main__':
