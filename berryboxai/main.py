@@ -478,7 +478,7 @@ def main():
                     # Save the image with predicted annotations, if requested
                     # THIS WILL NEED TO BE CHANGED FOR ROT DETECTION
                     if save_predictions:
-                        display_image_with_masks(image = image, results = results, class_names = ["ColorCard", "berry", "info"], 
+                        display_image_with_masks(image = image, result = result, class_names = ["ColorCard", "berry", "info"], 
                                                  output_path = os.path.join(img_save_folder, image_name_vec[0]), save = True)
                         # save_ROI_parallel(result, get_ids(result, 'berry'), os.path.join(img_save_folder, image_name_vec[0]))
 
@@ -486,7 +486,7 @@ def main():
                     if args.preview:
                         print("Close the preview window before proceeding to the next sample.")
                         # display_image_with_masks(image = image, results = results, class_names = ["ColorCard", "berry", "rotten"])
-                        display_image_with_masks(image = image, results = results, class_names = ["ColorCard", "berry", "info"])
+                        display_image_with_masks(image = image, result = result, class_names = ["ColorCard", "berry", "info"])
 
 
                 # DIFFERENT PROCESS FOR ROT DETECTION #
@@ -529,7 +529,7 @@ def main():
                     # Show a preview of the result
                     if args.preview:
                         print("Close the preview window before proceeding to the next sample.")
-                        display_image_with_masks(image = image, results = results, class_names = ["rotten", "sound"], show_masks = False)
+                        display_image_with_masks(image = image, result = result, class_names = ["rotten", "sound"], show_masks = False)
 
 
         finally:
@@ -618,7 +618,7 @@ def main():
                 # Save the image with predicted annotations, if requested
                 # THIS WILL NEED TO BE CHANGED FOR ROT DETECTION
                 if save_predictions:
-                    display_image_with_masks(image = image, results = results, class_names = ["ColorCard", "berry", "info"], 
+                    display_image_with_masks(image = image, result = result, class_names = ["ColorCard", "berry", "info"], 
                                              output_path = os.path.join(img_save_folder, image_name_vec[0]), save = True)
                     # save_ROI_parallel(result, get_ids(result, 'berry'), os.path.join(img_save_folder, image_name_vec[0]))
 
