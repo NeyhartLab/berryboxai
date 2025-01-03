@@ -6,7 +6,7 @@ dependencies:
   - python=3.9           # Specify the Python version
   - pip                  # Optionally include pip to install other pip-based dependencies
   - pip:
-    - ultralytics==8.1.0
+    - ultralytics>=8.1.0
     - readQR
     - torch
     - colorcorrectionML
