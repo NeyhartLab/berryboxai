@@ -39,6 +39,7 @@ def options():
                         required = False, default = "NULL")
     parser.add_argument('--output', help='The directory to store the data output', required = True)
     parser.add_argument('--conf', help='Confidence level for segmenting or detecting objects from the model', required = False, default = 0)
+    parser.add_argument('--iou', help='IOU level for segmenting or detecting objects from the model', required = False, default = 0)
     parser.add_argument('--imgsz', help='Image size before sending it to the model', required = False, default = (0, 0))
     parser.add_argument('--reduce-features', help='Save only the Area, Length, Width, Volume, Eccentricity, Red, Green, Blue, L*, a*, b*', default=False, action='store_true')
     parser.add_argument('--patch-size', help='The size (in cm) of the length/width of the patches in the ColorCard', required = False, default = 1.2)
@@ -111,7 +112,7 @@ def display_image_with_masks(image, result, class_names, show_masks = True, outp
     # Get the masks, boxes, and classes from the results
     if show_masks:
         masks = result.masks.data.numpy()  # Segmentation masks
-    colors = [(0, 255, 0), (255, 0, 0), (0, 0, 255)]  # Green for class 0, Red for class 1
+    colors = [(0, 0, 255), (255, 0, 0), (255, 255, 0), (0, 0, 255)]  # Green for class 0, Red for class 1
     # Generate random colors for each mask
     colors = {k: colors[i] for i, k in enumerate(class_names)}
     boxes = result.boxes.xyxy.numpy()  # Bounding boxes
@@ -326,10 +327,15 @@ def main():
     ## SET MODULE-SPECIFIC SETTINGS ##
     if mod == "berry-seg":
         task = "segment"
-        iou = 0.25
     elif mod == "rot-det":
         task = "detect"
-        iou = 0.25       
+
+    iou = float(args.iou)
+    if iou == 0:
+        if mod == "berry-seg":
+            iou = 0.25
+        elif mod == "rot-det":
+            iou = 0.25       
 
     # Set image size, confidence, and iou
     image_size = args.imgsz
@@ -508,7 +514,7 @@ def main():
                     # Save the image with predicted annotations, if requested
                     # THIS WILL NEED TO BE CHANGED FOR ROT DETECTION
                     if save_predictions:
-                        display_image_with_masks(image = image, result = result, class_names = ["ColorCard", "berry", "info"], 
+                        display_image_with_masks(image = image, result = result, class_names = ["ColorCard", "berry", "info", "rotten"], 
                                                  output_path = os.path.join(img_save_folder, image_name_vec[0]), save = True)
                         # save_ROI_parallel(result, get_ids(result, 'berry'), os.path.join(img_save_folder, image_name_vec[0]))
 
@@ -516,7 +522,7 @@ def main():
                     if args.preview:
                         print("Close the preview window before proceeding to the next sample.")
                         # display_image_with_masks(image = image, results = results, class_names = ["ColorCard", "berry", "rotten"])
-                        display_image_with_masks(image = image, result = result, class_names = ["ColorCard", "berry", "info"])
+                        display_image_with_masks(image = image, result = result, class_names = ["ColorCard", "berry", "info", "rotten"])
 
 
                 # DIFFERENT PROCESS FOR ROT DETECTION #
@@ -693,7 +699,7 @@ def main():
                 # Save the image with predicted annotations, if requested
                 # THIS WILL NEED TO BE CHANGED FOR ROT DETECTION
                 if save_predictions:
-                    display_image_with_masks(image = image, result = result, class_names = ["ColorCard", "berry", "info"], 
+                    display_image_with_masks(image = image, result = result, class_names = ["ColorCard", "berry", "info", "rotten"], 
                                              output_path = os.path.join(img_save_folder, image_name_vec[0]), save = True)
                     # save_ROI_parallel(result, get_ids(result, 'berry'), os.path.join(img_save_folder, image_name_vec[0]))
 
