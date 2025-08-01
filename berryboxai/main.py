@@ -47,6 +47,7 @@ def options():
     parser.add_argument('--preview', help = 'Display a preview of the image with predicted features.', default = False, action = 'store_true')
     parser.add_argument('--ext', help = 'Extension of the images to find in the "input" directory.', default = '.jpg', required = False)
     parser.add_argument('--overwrite', help = 'Overwrite the existing output file, if present.', default = False, action = 'store_true')
+    parser.add_argument('--model-path', help = 'The path to the .pt model weights to use. WARNING: this is a dangerous option and should only be used if you know what you are doing.', required = False, default = ".")
     parser.add_argument('--verbose', help='Should model progress be printed to the terminal?', default = False, action = 'store_true')
     args = parser.parse_args()
     return args
@@ -380,6 +381,14 @@ def main():
             device = "mps"
         else:
             device = "cpu"
+
+    # If the user provided a model path, use that
+    user_model_path = args.model_path
+    if user_model_path != ".":
+        if not os.path.isfile(user_model_path):
+            raise FileNotFoundError(f"Error: The file '{user_model_path}' does not exist.")
+        else:
+            model_path = user_model_path
 
     # Load the model
     model = YOLO(model_path, task = task)
