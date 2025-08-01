@@ -12,7 +12,7 @@
 
 # Import packages here
 from .functions import * # load all functions
-# from ultralytics import YOLO
+from ultralytics import YOLO
 import os
 import torch
 import gc
@@ -48,6 +48,8 @@ def options():
     parser.add_argument('--ext', help = 'Extension of the images to find in the "input" directory.', default = '.jpg', required = False)
     parser.add_argument('--overwrite', help = 'Overwrite the existing output file, if present.', default = False, action = 'store_true')
     parser.add_argument('--model-path', help = 'The path to the .pt model weights to use. WARNING: this is a dangerous option and should only be used if you know what you are doing.', required = False, default = ".")
+    parser.add_argument('--no-cc', help='Disable color correction', default = False, action = 'store_true')
+    parser.add_argument('--no-qr', help='Disable the QR code and OCR reader', default = False, action = 'store_true')
     parser.add_argument('--verbose', help='Should model progress be printed to the terminal?', default = False, action = 'store_true')
     args = parser.parse_args()
     return args
@@ -356,13 +358,14 @@ def main():
         elif mod == "rot-det":
             confidence = 0.50
 
+    no_cc = args.no_cc
+    no_qr = args.no_qr
+
     ## LOAD AND CHECK THE YOLO MODEL ##
     # This finds the model within the package structure
     package_dir = pkg_resources.resource_filename('berryboxai', 'data')
 
-    # Load the ultralytics library
-    from ultralytics import YOLO
-    
+ 
     # If the platform is Windows, check that the openvino model exists;
     # If it does not exist, convert it
     if platform.system() == "Windows":
@@ -461,10 +464,13 @@ def main():
                 if (mod == "berry-seg"):
                     # 6. Process the results
                     # Try color correction; skip if it doesn't work
-                    try:
-                        result, patch_size = color_correction(result)
-                        patch_size = np.min(patch_size)
-                    except:
+                    if not no_cc:
+                        try:
+                            result, patch_size = color_correction(result)
+                            patch_size = np.min(patch_size)
+                        except:
+                            continue
+                    else:
                         continue
 
                     # Update the patch size
@@ -639,11 +645,13 @@ def main():
             if mod == "berry-seg":
                 # 6. Process the results
                 # Try color correction; skip if it doesn't work
-                try:
-                    result, patch_size = color_correction(result)
-                    patch_size = np.min(patch_size)
-
-                except:
+                if not no_cc:
+                    try:
+                        result, patch_size = color_correction(result)
+                        patch_size = np.min(patch_size)
+                    except:
+                        continue
+                else:
                     continue
 
                 # Update the patch size
@@ -651,12 +659,15 @@ def main():
                     if patch_size < patch_size_use or patch_size_use == 0:
                         patch_size_use = patch_size
 
-                # Was "info" found?
-                if any(result.boxes.cls == get_ids(result, 'info')[0]):
-                    barcode = read_QR_code(result)
-                else:
-                    print("No 'info' detected by the model.\n")
+                # Try to detect the QR code if called on to do that
+                if no_qr:
                     barcode = image_name
+                
+                else:
+                    if any(result.boxes.cls == get_ids(result, 'info')[0]):
+                        barcode = read_QR_code(result)
+                    else:
+                        barcode = image_name
 
                 # Get features
                 df1 = get_all_features_parallel(result, name= 'berry')
