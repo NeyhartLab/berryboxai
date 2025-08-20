@@ -113,13 +113,11 @@ def get_time():
     return str(ct)
 
 # Function to display image with YOLO segmentation masks
-def display_image_with_masks(image, result, class_names, show_masks = True, output_path = "", save = False):
-
+def display_image_with_masks(image, result, class_names, show_masks=True, show_count=False, output_path="", save=False):
     # Get the masks, boxes, and classes from the results
-    if show_masks:
+    if show_masks and hasattr(result, "masks") and result.masks is not None:
         masks = result.masks.data.numpy()  # Segmentation masks
-    colors = [(0, 0, 255), (255, 0, 0), (255, 255, 0), (0, 0, 255)]  # Green for class 0, Red for class 1
-    # Generate random colors for each mask
+    colors = [(0, 0, 255), (255, 0, 0), (255, 255, 0), (0, 0, 255)]
     colors = {k: colors[i] for i, k in enumerate(class_names)}
     boxes = result.boxes.xyxy.numpy()  # Bounding boxes
     class_ids = result.boxes.cls.numpy()  # Class IDs
@@ -128,54 +126,66 @@ def display_image_with_masks(image, result, class_names, show_masks = True, outp
     # Sort bounding boxes by top-to-bottom, left-to-right (row-major order)
     sorted_indices = sorted(
         range(len(boxes)),
-        key=lambda i: (boxes[i][1], boxes[i][0])  # Sort by y1 (top) first, then x1 (left)
+        key=lambda i: (boxes[i][1], boxes[i][0])
     )
 
+    # Count for show_count
+    count_dict = {name: 0 for name in class_names}
+    for i in range(len(class_ids)):
+        class_name = result.names[int(class_ids[i])]
+        if class_name in count_dict:
+            count_dict[class_name] += 1
+
     # Display boxes or masks
-    for rank, i in enumerate(sorted_indices, start=1):  # Start numbering from 1
+    for rank, i in enumerate(sorted_indices, start=1):
         box = boxes[i]
         class_id = int(class_ids[i])
         class_name = result.names[class_id]
         color = colors[class_name]
-        # Create a colored mask if called for
-        if show_masks:
+        if show_masks and hasattr(result, "masks") and result.masks is not None:
             mask = masks[i]
             colored_mask = np.zeros_like(image, dtype=np.uint8)
-            for c in range(3):  # Apply color to each channel
+            for c in range(3):
                 colored_mask[:, :, c] = mask * color[c]
-
-            # Blend the colored mask with the original image
             image = cv2.addWeighted(image, 1, colored_mask, 0.5, 0)
 
-
-        # Draw the bounding box around the object
         x1, y1, x2, y2 = map(int, boxes[i])
         cv2.rectangle(image, (x1, y1), (x2, y2), color, 2)
-
-        # Draw the class label and confidence score
-        class_name = result.names[class_id]
         label = f'Object {rank}: {class_name}, Conf: {confidences[i]:.2f}'
         cv2.putText(image, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
+    # Annotate with counts if requested
+    if show_count:
+        # Only annotate for "sound" and "rotten" if present in class_names
+        text_lines = []
+        if "sound" in count_dict:
+            text_lines.append(f"Sound: {count_dict['sound']}")
+        if "rotten" in count_dict:
+            text_lines.append(f"Rotten: {count_dict['rotten']}")
+        count_text = "  ".join(text_lines)
+        if count_text:
+            cv2.putText(
+                image,
+                count_text,
+                (20, 40),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1.2,
+                (0, 255, 0),
+                3,
+                lineType=cv2.LINE_AA
+            )
 
     if save:
         cv2.imwrite(output_path, image)
-
     else:
-        # Resize the image for a smaller preview
         og_h, og_w = image.shape[:2]
         new_h = int(og_h * 0.5)
         new_w = int(og_w * 0.5)
         image = cv2.resize(image, (new_w, new_h))
-
-        # Display the image in a window
         window_name = "Predictions"
         cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
         cv2.setWindowProperty(window_name, cv2.WND_PROP_TOPMOST, 1)
         cv2.imshow(window_name, image)
-        # cv2.resizeWindow("Predictions", new_w, new_h)
-
-        # Wait for a key press and close the window
         cv2.waitKey(0)
         cv2.destroyAllWindows()
 
@@ -599,7 +609,7 @@ def main():
                     # Show a preview of the result
                     if args.preview:
                         print("Close the preview window before proceeding to the next sample.")
-                        display_image_with_masks(image = image, result = result, class_names = ["rotten", "sound"], show_masks = False)
+                        display_image_with_masks(image = image, result = result, class_names = ["rotten", "sound"], show_masks = False, show_count = True)
 
 
         finally:
