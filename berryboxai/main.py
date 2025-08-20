@@ -368,10 +368,26 @@ def main():
     # This finds the model within the package structure
     package_dir = pkg_resources.resource_filename('berryboxai', 'data')
 
+    system = platform.system()
+    machine = platform.machine()
+
+    # Figure out the OS
+    if system == "Linux":
+        os_type = "linux"
+    elif system == "Darwin":
+        os_type = "macOS"
+        if machine == "arm64":
+            os_type = "arm_mac"
+        elif machine == "x86_64":
+            os_type = "intel_mac"
+    elif system == "Windows":
+        os_type = "windows"
+    else:
+        raise RuntimeError(f"Unsupported OS type: system={system}, machine={machine}")
  
     # If the platform is Windows, check that the openvino model exists;
     # If it does not exist, convert it
-    if platform.system() == "Windows":
+    if os_type == "windows" or os_type == "intel_mac":
         model_name = "berrybox_" + mod + "_openvino_model"
         device = "cpu"
         model_path = os.path.join(package_dir, 'weights', model_name)
@@ -383,7 +399,7 @@ def main():
     else:
         model_name = "berrybox_" + mod + ".pt"
         model_path = os.path.join(package_dir, 'weights', model_name)
-        if platform.system() == "Darwin":
+        if os_type == "arm_mac":
             device = "mps"
         else:
             device = "cpu"
