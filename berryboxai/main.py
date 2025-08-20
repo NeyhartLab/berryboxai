@@ -50,6 +50,9 @@ def options():
     parser.add_argument('--model-path', help = 'The path to the .pt model weights to use. WARNING: this is a dangerous option and should only be used if you know what you are doing.', required = False, default = ".")
     parser.add_argument('--no-cc', help='Disable color correction', default = False, action = 'store_true')
     parser.add_argument('--no-qr', help='Disable the QR code and OCR reader', default = False, action = 'store_true')
+    parser.add_argument('--rpiip', help='IP address of the raspberry pi', default = '169.254.111.10')
+    parser.add_argument('--rpiuser', help='Username of the raspberry pi', default = 'cranpi2')
+    parser.add_argument('--rpipwd', help='Password of the raspberry pi', default = 'usdacran')
     parser.add_argument('--verbose', help='Should model progress be printed to the terminal?', default = False, action = 'store_true')
     args = parser.parse_args()
     return args
@@ -284,9 +287,9 @@ def main():
     if interactive:
         ## RASPBERRY PI SETUP ##
         # These settings may need to be changed in the future
-        hostname = "169.254.111.10"
-        username = "cranpi2"
-        password = "usdacran"
+        hostname = args.rpiip
+        username = args.rpiuser
+        password = args.rpipwd
         try:
             ssh = create_ssh_client(hostname, username, password)
         except:

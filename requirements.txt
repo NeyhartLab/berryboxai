@@ -10,3 +10,4 @@ paramiko
 opencv-python
 scp
 pandas
+colour-science==0.4.4
