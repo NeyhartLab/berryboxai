@@ -10,24 +10,14 @@
 ##
 ## 
 
-# Import packages here
-from .functions import * # load all functions
-from ultralytics import YOLO
-import os
-import torch
-import gc
-import shutil
-from PIL import Image # Probably remove this for opencv
-import paramiko
-import time
-from scp import SCPClient
-import pandas as pd
-import cv2
+# Lightweight imports only; heavy/third-party modules are imported lazily inside `main()`
 import argparse
-import pkg_resources
-import platform
-import math
 import ast
+import os
+import time
+import math
+import platform
+import pkg_resources
 
 
 # options parsers
@@ -42,17 +32,18 @@ def options():
     parser.add_argument('--iou', help='IOU level for segmenting or detecting objects from the model', required = False, default = 0)
     parser.add_argument('--imgsz', help='Image size before sending it to the model', required = False, default = (0, 0))
     parser.add_argument('--reduce-features', help='Save only the Area, Length, Width, Volume, Eccentricity, Red, Green, Blue, L*, a*, b*', default=False, action='store_true')
+    parser.add_argument('--ext', help = 'Extension of the images to find in the "input" directory.', default = '.jpg', required = False)
     parser.add_argument('--patch-size', help='The size (in cm) of the length/width of the patches in the ColorCard', required = False, default = 1.2)
     parser.add_argument('--save', help='Save the annotated images from the model output', default = False, action = 'store_true')
     parser.add_argument('--preview', help = 'Display a preview of the image with predicted features.', default = False, action = 'store_true')
-    parser.add_argument('--ext', help = 'Extension of the images to find in the "input" directory.', default = '.jpg', required = False)
     parser.add_argument('--overwrite', help = 'Overwrite the existing output file, if present.', default = False, action = 'store_true')
-    parser.add_argument('--model-path', help = 'The path to the .pt model weights to use. WARNING: this is a dangerous option and should only be used if you know what you are doing.', required = False, default = ".")
+    parser.add_argument('--save-cc', help='Save the color corrected image', default = False, action = 'store_true')
     parser.add_argument('--no-cc', help='Disable color correction', default = False, action = 'store_true')
     parser.add_argument('--no-qr', help='Disable the QR code and OCR reader', default = False, action = 'store_true')
     parser.add_argument('--rpiip', help='IP address of the raspberry pi', default = '169.254.111.10')
     parser.add_argument('--rpiuser', help='Username of the raspberry pi', default = 'cranpi2')
     parser.add_argument('--rpipwd', help='Password of the raspberry pi', default = 'usdacran')
+    parser.add_argument('--model-path', help = 'The path to the .pt model weights to use. WARNING: this is a dangerous option and should only be used if you know what you are doing.', required = False, default = ".")
     parser.add_argument('--verbose', help='Should model progress be printed to the terminal?', default = False, action = 'store_true')
     args = parser.parse_args()
     return args
@@ -275,12 +266,434 @@ def summarize_rot_det_results(result):
     return (n_total_berries, n_rotten, n_sound, perc_rot, weighted_perc_rot)
 
 
+# A function to run the interactive mode of the pipeline
+def run_interactive(mod, model, model_params, ssh, raw_image_dir, newW, newH, output_file, patch_size, patch_size_use, save, 
+                    preview, save_cc, no_cc, reduce, save_folder, cc_save_folder):
+
+    ## RUN THE CAPTURE PIPELINE ##
+    print("\nRunning berryboxai in interactive mode using the " + mod + " module...\n")
+
+    # Main loop for capturing multiple images
+    try:
+        while True:
+            # 1. Capture barcode and wait for Enter
+            barcode = input("Scan the barcode and hit 'Enter' (or type 'exit' and hit 'Enter' to quit): ")
+            if barcode.lower() == 'exit':
+                break
+                
+            # Date-time for printing
+            current_datetime = get_time()
+
+            # 2. Trigger Nikon D7500 shutter using gphoto2 on Raspberry Pi
+            print("Capturing and transferring the image...")
+            remote_image_path = "/home/cranpi2/berrybox/captured_image.jpg"
+            trigger_command = f"gphoto2 --capture-image-and-download --filename {remote_image_path} --force-overwrite"
+            ssh.exec_command(command = trigger_command)
+            # Wait a bit to ensure the image is captured and transferred
+            time.sleep(3)
+
+            # 4. Transfer the image from Raspberry Pi to local machine
+            local_image_path = f"{raw_image_dir}/{barcode}_{current_datetime}.jpg" 
+            transfer_image(ssh, remote_image_path, local_image_path)
+
+            print("Running the deep learning model on the image...")
+            # 5. Read in the image and resize and run through the YOLO model
+            image_name = local_image_path.split("/")[-1]
+            image = cv2.imread(local_image_path)
+            image = cv2.resize(image, (newW, newH))
+            results = model.predict(source = image, **model_params)
+            # Map results to cpu
+            result = results[0].to("cpu")
+
+            print("Processing and saving model results...")
+            ## PROCESS RESULTS DEPENDING ON THE MODULE ##
+            if (mod == "berry-seg"):
+                # 6. Process the results
+                # Try color correction; skip if it doesn't work
+                if not no_cc:
+                    try:
+                        result, cc_patch_size = color_correction(result)
+                        cc_patch_size = np.min(cc_patch_size)
+                    except:
+                        continue
+
+                    # Save the color corrected image, if requested
+                    if save_cc:
+                        save_path = os.path.join(cc_save_folder, "color_corrected_" + image_name)
+                        cv2.imwrite(save_path, result.orig_img)
+
+                else:
+                    continue
+
+                # Update the patch size
+                if cc_patch_size > 0:
+                    if cc_patch_size < patch_size_use or patch_size_use == 0:
+                        patch_size_use = cc_patch_size
+
+
+                # Get features
+                df1 = get_all_features_parallel(result, name= 'berry')
+                df2 = get_all_features_parallel(result, name= 'rotten')
+                df = pd.concat([pd.DataFrame({'name': (['berry'] * df1.shape[0]) + (['rotten'] * df2.shape[0])}), pd.concat([df1, df2], ignore_index = True)], axis = 1)    
+                w,_ = df.shape
+                image_name_vec = [image_name]*w
+                patch_size_vec = [cc_patch_size]*w
+                indeces = list(range(w))
+                # If indeces is length 0; warn that no berries were found
+                if len(indeces) == 0:
+                    print('\033[1;33mNo berries were found in the image!\033[0m')
+                    continue
+
+                # 7. Save results (image name, date, barcode, object count) to CSV
+                data = {
+                    'Date': current_datetime,
+                    'Image Name': image_name_vec,
+                    'QR_info': barcode,
+                    'Object_ID': indeces,
+                    'Patch_size': patch_size_vec
+                }
+                df_fore = pd.DataFrame(data)
+                # Combine with the features
+                df = pd.concat([df_fore, df], axis=1)
+
+                ## Calculate additional features
+                # Volume
+                df["Ellipsoid_model_volume"] = (4/3) * np.pi * (df["RP_Minor_axis_length"] / 2) * ((df["RP_Major_axis_length"] / 2) ** 2)
+                # Eccentricity
+                df["Eccentricity"] = np.sqrt(1 - ((0.5 * df["RP_Major_axis_length"]) ** 2 / (0.5 * df["RP_Minor_axis_length"]) ** 2))
+
+                # Assign the berry ID by sorting on bounding box coordinates
+                df = df.sort_values(by=["RP_BB_y", "RP_BB_x"])
+                df = df.reset_index(drop=True)
+                df["Object_ID"] = df.index
+
+                # Append to CSV if it exists
+                output_feature_filename = output_file
+                try:
+                    existing_df = pd.read_csv(output_feature_filename)
+                    df = pd.concat([existing_df, df], axis = 0, ignore_index=True)
+                except FileNotFoundError:
+                    pass
+
+                df.to_csv(output_feature_filename, index=False)
+
+                print(f"Image {image_name} captured, processed, and features saved with {w} berries detected.\n\n")
+
+                # Save the image with predicted annotations, if requested
+                if save:
+                    display_image_with_masks(image = result.orig_img, result = result, class_names = ["ColorCard", "berry", "info", "rotten"], 
+                                                output_path = os.path.join(save_folder, image_name_vec[0]), save = True)
+                    # save_ROI_parallel(result, get_ids(result, 'berry'), os.path.join(img_save_folder, image_name_vec[0]))
+
+                # Show a preview of the result
+                if preview:
+                    print("Close the preview window before proceeding to the next sample.")
+                    # display_image_with_masks(image = image, results = results, class_names = ["ColorCard", "berry", "rotten"])
+                    display_image_with_masks(image = result.orig_img, result = result, class_names = ["ColorCard", "berry", "info", "rotten"])
+
+
+            # DIFFERENT PROCESS FOR ROT DETECTION #
+            elif (mod == "rot-det"):
+                # Summarize results
+                objects_count, n_rotten, n_sound, perc_rot, weighted_perc_rot = summarize_rot_det_results(result)
+                # If indeces is length 0; warn that no berries were found
+                if objects_count == 0:
+                    print('\033[1;33mNo berries were found in the image!\033[0m')
+                    continue
+
+                # 7. Save results (image name, date, barcode, object count) to CSV
+                image_name = local_image_path.split("/")[-1]
+
+                data = {
+                    'Date': current_datetime,
+                    'Image Name': image_name,
+                    'QR_info': barcode,
+                    'NumberSoundBerries': n_sound,
+                    'NumberRottenBerries': n_rotten,
+                    'FruitRotPer': perc_rot,
+                    'FruitRotPerWtd': weighted_perc_rot
+                }
+                df = pd.DataFrame(data, index = [0])
+
+                # Append to CSV if it exists
+                try:
+                    existing_df = pd.read_csv(output_feature_filename)
+                    df = pd.concat([existing_df, df], axis = 0, ignore_index=True)
+                except FileNotFoundError:
+                    pass
+
+                df.to_csv(output_feature_filename, index=False)
+
+                print(f"Image {image_name} captured, processed, and features saved with {n_sound} sound berries and {n_rotten} rotten berries detected.\n\n")
+
+                if save:
+                    save_ROI_boxes(image = image, result = result, class_names = ["rotten", "sound"], output_path = os.path.join(save_folder, image_name))
+
+                # Show a preview of the result
+                if preview:
+                    print("Close the preview window before proceeding to the next sample.")
+                    display_image_with_masks(image = image, result = result, class_names = ["rotten", "sound"], show_masks = False, show_count = True)
+
+
+    finally:
+        # Modify the output data frame for berry seg
+        if mod == "berry-seg":
+            # Read the df back in
+            df = pd.read_csv(output_feature_filename)
+
+            # Convert features to cm and rename
+            # Use the final patch size to calculate pixels to cm
+            cm_per_pixel = float(patch_size) / patch_size_use
+            df["Area"] = df["RP_Area"] * (cm_per_pixel ** 2)
+            df["Length"] = df["RP_Minor_axis_length"] * cm_per_pixel
+            df["Width"] = df["RP_Major_axis_length"] * cm_per_pixel
+            df["Ellipsoid_model_volume"] = df["Ellipsoid_model_volume"] * (cm_per_pixel ** 3)
+            df["cm_per_pixel"] = cm_per_pixel
+
+            ## Subset features
+            if reduce:
+                features_select = ["Date", "Image Name", "QR_info", "Object_ID", "Patch_size", "name", "Area", "Length", "Width", "Ellipsoid_model_volume", "Eccentricity", "Red_Color_Mean", "Red_Color_Median", "Red_Color_Std", "Green_Color_Mean", "Green_Color_Median", "Green_Color_Std", "Blue_Color_Mean", "Blue_Color_Median", "Blue_Color_Std", "L_Color_Mean", "L_Color_Median", "L_Color_Std", "a_Color_Mean", "a_Color_Median", "a_Color_Std", "b_Color_Mean", "b_Color_Median", "b_Color_Std"]
+                df = df[features_select]
+            else:
+                features_drop = ["RP_Area", "RP_Major_axis_length", "RP_Minor_axis_length"]
+                df = df.drop(columns = features_drop)
+            
+            # Save the df
+            df.to_csv(output_feature_filename, index=False)
+
+
+        # Ensure the SSH connection is closed at the end
+        ssh.close()
+        print("SSH connection closed.")
+
+
+# A function to run batch mode
+def run_batch(mod, model, model_params, ext, input_dir, newW, newH, output_file, patch_size, patch_size_use, save, 
+              no_qr, no_cc, save_cc, reduce, save_folder, cc_save_folder):
+    
+    ## RUN THE BATCH PIPELINE ##
+    print("\nRunning berryboxai in batch mode using the " + mod + " module...\n")
+
+    # Date for printing
+    current_date = get_date()
+
+
+    # List images in the input directory
+    image_extension = ext
+    image_extension = image_extension.upper()
+    image_list = os.listdir(input_dir)
+    image_path_list = [os.path.join(input_dir, x) for x in image_list if image_extension in x.upper()]
+    n_images = len(image_path_list)
+
+    # Print the number of images found
+    print("Using images from the directory: " + input_dir)
+    print("Discovered " + str(n_images) + " images in the directory")
+    print("Running the deep learning model on the images...\n")
+
+    # Iterate over images
+    for p, local_image_path in enumerate(image_path_list):
+
+        # 5. Read in the image and resize and run through the YOLO model
+        image_name = local_image_path.split("/")[-1]
+        image = cv2.imread(local_image_path)
+        image = cv2.resize(image, (newW, newH))
+        results = model.predict(source = image, **model_params)
+        # Map results to cpu
+        result = results[0].to("cpu")
+
+        ## PROCESS RESULTS DEPENDING ON THE MODULE ##
+        if mod == "berry-seg":
+            # 6. Process the results
+            # Try color correction; skip if it doesn't work
+            if not no_cc:
+                try:
+                    result, patch_size = color_correction(result)
+                    patch_size = np.min(patch_size)
+                except:
+                    continue
+
+                # Save the color corrected image, if requested
+                if save_cc:
+                    save_path = os.path.join(cc_save_folder, "color_corrected_" + image_name)
+                    cv2.imwrite(save_path, result.orig_img)
+                    
+            else:
+                continue
+
+            # Update the patch size
+            if patch_size > 0:
+                if patch_size < patch_size_use or patch_size_use == 0:
+                    patch_size_use = patch_size
+
+            # Try to detect the QR code if called on to do that
+            if no_qr:
+                barcode = image_name
+            
+            else:
+                if any(result.boxes.cls == get_ids(result, 'info')[0]):
+                    barcode = read_QR_code(result)
+                else:
+                    barcode = image_name
+
+            # Get features
+            df1 = get_all_features_parallel(result, name= 'berry')
+            df2 = get_all_features_parallel(result, name= 'rotten')
+            df = pd.concat([pd.DataFrame({'name': (['berry'] * df1.shape[0]) + (['rotten'] * df2.shape[0])}), pd.concat([df1, df2], ignore_index = True)], axis = 1)    
+            w,_ = df.shape
+            image_name_vec = [image_name]*w
+            patch_size_vec = [np.mean(patch_size)]*w
+            indeces = list(range(w))
+            # If indeces is length 0; warn that no berries were found
+            if len(indeces) == 0:
+                print('\033[1;33mNo berries were found in the image!\033[0m')
+                continue
+
+            # 7. Save results (image name, date, barcode, object count) to CSV
+            data = {
+                'Date': current_date,
+                'Image Name': image_name_vec,
+                'QR_info': barcode,
+                'Object_ID': indeces,
+                'Patch_size': patch_size_vec
+            }
+            df_fore = pd.DataFrame(data)
+            # Combine with the features
+            df = pd.concat([df_fore, df], axis=1)
+
+            ## Calculate additional features
+            # Volume
+            df["Ellipsoid_model_volume"] = (4/3) * np.pi * (df["RP_Minor_axis_length"] / 2) * ((df["RP_Major_axis_length"] / 2) ** 2)
+            # Eccentricity
+            df["Eccentricity"] = np.sqrt(1 - ((0.5 * df["RP_Major_axis_length"]) ** 2 / (0.5 * df["RP_Minor_axis_length"]) ** 2))
+
+            # Assign the berry ID by sorting on bounding box coordinates
+            df = df.sort_values(by=["RP_BB_y", "RP_BB_x"])
+            df = df.reset_index(drop=True)
+            df["Object_ID"] = df.index
+
+            # Append to CSV if it exists
+            try:
+                existing_df = pd.read_csv(output_file)
+                df = pd.concat([existing_df, df], axis = 0, ignore_index=True)
+            except FileNotFoundError:
+                pass
+
+            df.to_csv(output_file, index=False)
+
+            print(f"Image {image_name} processed and features saved with {w} berries detected.")
+
+            # Save the image with predicted annotations, if requested
+            if save:
+                display_image_with_masks(image = result.orig_img, result = result, class_names = ["ColorCard", "berry", "info", "rotten"], 
+                                            output_path = os.path.join(save_folder, image_name_vec[0]), save = True)
+                # save_ROI_parallel(result, get_ids(result, 'berry'), os.path.join(img_save_folder, image_name_vec[0]))
+
+
+        # DIFFERENT PROCESS FOR ROT DETECTION #
+        elif (mod == "rot-det"):
+            # Summarize results
+            objects_count, n_rotten, n_sound, perc_rot, weighted_perc_rot = summarize_rot_det_results(result)
+            # If indeces is length 0; warn that no berries were found
+            if objects_count == 0:
+                print('\033[1;33mNo berries were found in the image!\033[0m')
+                continue
+
+            # 7. Save results (image name, date, barcode, object count) to CSV
+            image_name = local_image_path.split("/")[-1]
+
+            data = {
+                'Image Name': image_name,
+                'NumberSoundBerries': n_sound,
+                'NumberRottenBerries': n_rotten,
+                'FruitRotPer': perc_rot,
+                'FruitRotPerWtd': weighted_perc_rot
+            }
+            df = pd.DataFrame(data, index = [0])
+
+            # Append to CSV if it exists
+            try:
+                existing_df = pd.read_csv(output_file)
+                df = pd.concat([existing_df, df], axis = 0, ignore_index=True)
+            except FileNotFoundError:
+                pass
+
+            df.to_csv(output_file, index=False)
+
+            print(f"Image {image_name} processed, and features saved with {n_sound} sound berries and {n_rotten} rotten berries detected.")
+
+            if save:
+                save_ROI_boxes(image = image, result = result, class_names = ["rotten", "sound"], output_path = os.path.join(save_folder, image_name))
+
+        print(f"Image {p + 1} of {n_images} processed.\n")
+
+    print("\nAll images processed. Results are saved in " + save_folder)
+
+    # Modify the output data frame for berry seg
+    if mod == "berry-seg":
+        # Read the df back in
+        df = pd.read_csv(output_file)
+
+        # Convert features to cm and rename
+        # Use the final patch size to calculate pixels to cm
+        cm_per_pixel = float(patch_size) / patch_size_use
+        df["Area"] = df["RP_Area"] * (cm_per_pixel ** 2)
+        df["Length"] = df["RP_Minor_axis_length"] * cm_per_pixel
+        df["Width"] = df["RP_Major_axis_length"] * cm_per_pixel
+        df["Ellipsoid_model_volume"] = df["Ellipsoid_model_volume"] * (cm_per_pixel ** 3)
+        df["cm_per_pixel"] = cm_per_pixel
+
+
+        ## Subset features
+        if reduce:
+            features_select = ["Date", "Image Name", "QR_info", "Object_ID", "Patch_size", "name", "Area", "Length", "Width", "Ellipsoid_model_volume", "Eccentricity", "Red_Color_Mean", "Red_Color_Median", "Red_Color_Std", "Green_Color_Mean", "Green_Color_Median", "Green_Color_Std", "Blue_Color_Mean", "Blue_Color_Median", "Blue_Color_Std", "L_Color_Mean", "L_Color_Median", "L_Color_Std", "a_Color_Mean", "a_Color_Median", "a_Color_Std", "b_Color_Mean", "b_Color_Median", "b_Color_Std"]
+            df = df[features_select]
+        else:
+            features_drop = ["RP_Area", "RP_Major_axis_length", "RP_Minor_axis_length"]
+            df = df.drop(columns = features_drop)
+        
+        # Save the df
+        df.to_csv(output_file, index=False)
+
 
 ## The main function
 def main():
 
     # Get arguments
     args = options()
+    # Lazy-import heavy third-party modules after parsing CLI args to speed up -h/help
+    # Import the package-local helper module and third-party packages lazily.
+    from . import functions as _functions
+    # Bring function symbols into this module's namespace for compatibility
+    for _name in dir(_functions):
+        if not _name.startswith("__"):
+            globals()[_name] = getattr(_functions, _name)
+
+    import numpy as np
+    globals()['np'] = np
+    import cv2
+    globals()['cv2'] = cv2
+    from PIL import Image, ImageTk
+    globals()['Image'] = Image
+    globals()['ImageTk'] = ImageTk
+    import paramiko
+    globals()['paramiko'] = paramiko
+    from scp import SCPClient
+    globals()['SCPClient'] = SCPClient
+    import pandas as pd
+    globals()['pd'] = pd
+    from ultralytics import YOLO
+    globals()['YOLO'] = YOLO
+    import torch
+    globals()['torch'] = torch
+    import gc
+    globals()['gc'] = gc
+    import shutil
+    globals()['shutil'] = shutil
+    import tkinter as tk
+    globals()['tk'] = tk
+    from tkinter import filedialog, messagebox
+    globals()['filedialog'] = filedialog
+    globals()['messagebox'] = messagebox
     # Determine the module
     mod = args.module
     # Determine if 'input' is provided
@@ -328,12 +741,31 @@ def main():
     output_dir = session_dir + "/output/"
     if not os.path.exists(output_dir):
         os.mkdir(output_dir)
+
+    # Flag for saving color corrected images
+    save_cc = args.save_cc
+
+    # If save_cc is true, create a directory to save the color corrected images
+    if save_cc:
+        cc_save_folder = os.path.join(output_dir, 'color_corrected_images')
+        if not os.path.exists(cc_save_folder):
+            os.mkdir(cc_save_folder)
+    else:
+        # Empty
+        cc_save_folder = ""
     
     # Create directory to save the inference images, if requested
     if save_predictions:
         img_save_folder = os.path.join(output_dir, 'predictions')
         if not os.path.exists(img_save_folder):
             os.mkdir(img_save_folder)
+    else:
+        # Make img_save_folder blank if not saving predictions because otherwise there will be an
+        # undefined object error if save is false (run_interactive and run_batch call on img_save_folder regardless of save_predictions value)
+        img_save_folder = ""
+        # Check if save_cc is true; if it is, error out (user cannot not save AND save color corrected images)
+        if save_cc:
+            raise ValueError("Error: Cannot save color corrected images if not saving prediction images. Please set --save_cc to False or --save to True.")
 
     # Create the filename to save the features
     output_feature_filename = output_dir + "/" + session_name + "_features.csv"
@@ -446,377 +878,23 @@ def main():
     # Tuple of image size
     newH, newW = model_params["imgsz"]
 
-    # Date for printing
-    current_date = get_date()
-
     # Patch size placeholder
     patch_size_use = 0
 
     if interactive:
-        ## RUN THE CAPTURE PIPELINE ##
-        print("\nRunning berryboxai in interactive mode using the " + mod + " module...\n")
-
-        # Main loop for capturing multiple images
-        try:
-            while True:
-                # 1. Capture barcode and wait for Enter
-                barcode = input("Scan the barcode and hit 'Enter' (or type 'exit' and hit 'Enter' to quit): ")
-                if barcode.lower() == 'exit':
-                    break
-                    
-                # Date-time for printing
-                current_datetime = get_time()
-
-                # 2. Trigger Nikon D7500 shutter using gphoto2 on Raspberry Pi
-                print("Capturing and transferring the image...")
-                remote_image_path = "/home/cranpi2/berrybox/captured_image.jpg"
-                trigger_command = f"gphoto2 --capture-image-and-download --filename {remote_image_path} --force-overwrite"
-                ssh.exec_command(command = trigger_command)
-                # Wait a bit to ensure the image is captured and transferred
-                time.sleep(3)
-
-                # 4. Transfer the image from Raspberry Pi to local machine
-                local_image_path = f"{raw_image_dir}/{barcode}_{current_datetime}.jpg" 
-                transfer_image(ssh, remote_image_path, local_image_path)
-
-                print("Running the deep learning model on the image...")
-                # 5. Read in the image and resize and run through the YOLO model
-                image_name = local_image_path.split("/")[-1]
-                image = cv2.imread(local_image_path)
-                image = cv2.resize(image, (newW, newH))
-                results = model.predict(source = image, **model_params)
-                # Map results to cpu
-                result = results[0].to("cpu")
-
-                print("Processing and saving model results...")
-                ## PROCESS RESULTS DEPENDING ON THE MODULE ##
-                if (mod == "berry-seg"):
-                    # 6. Process the results
-                    # Try color correction; skip if it doesn't work
-                    if not no_cc:
-                        try:
-                            result, patch_size = color_correction(result)
-                            patch_size = np.min(patch_size)
-                        except:
-                            continue
-                    else:
-                        continue
-
-                    # Update the patch size
-                    if patch_size > 0:
-                        if patch_size < patch_size_use or patch_size_use == 0:
-                            patch_size_use = patch_size
-
-
-                    # Get features
-                    df1 = get_all_features_parallel(result, name= 'berry')
-                    df2 = get_all_features_parallel(result, name= 'rotten')
-                    df = pd.concat([pd.DataFrame({'name': (['berry'] * df1.shape[0]) + (['rotten'] * df2.shape[0])}), pd.concat([df1, df2], ignore_index = True)], axis = 1)    
-                    w,_ = df.shape
-                    image_name_vec = [image_name]*w
-                    patch_size_vec = [patch_size]*w
-                    indeces = list(range(w))
-                    # If indeces is length 0; warn that no berries were found
-                    if len(indeces) == 0:
-                        print('\033[1;33mNo berries were found in the image!\033[0m')
-                        continue
-
-                    # 7. Save results (image name, date, barcode, object count) to CSV
-                    data = {
-                        'Date': current_datetime,
-                        'Image Name': image_name_vec,
-                        'QR_info': barcode,
-                        'Object_ID': indeces,
-                        'Patch_size': patch_size_vec
-                    }
-                    df_fore = pd.DataFrame(data)
-                    # Combine with the features
-                    df = pd.concat([df_fore, df], axis=1)
-
-                    ## Calculate additional features
-                    # Volume
-                    df["Ellipsoid_model_volume"] = (4/3) * np.pi * (df["RP_Minor_axis_length"] / 2) * ((df["RP_Major_axis_length"] / 2) ** 2)
-                    # Eccentricity
-                    df["Eccentricity"] = np.sqrt(1 - ((0.5 * df["RP_Major_axis_length"]) ** 2 / (0.5 * df["RP_Minor_axis_length"]) ** 2))
-
-                    # Assign the berry ID by sorting on bounding box coordinates
-                    df = df.sort_values(by=["RP_BB_y", "RP_BB_x"])
-                    df = df.reset_index(drop=True)
-                    df["Object_ID"] = df.index
-
-                    # Append to CSV if it exists
-                    try:
-                        existing_df = pd.read_csv(output_feature_filename)
-                        df = pd.concat([existing_df, df], axis = 0, ignore_index=True)
-                    except FileNotFoundError:
-                        pass
-
-                    df.to_csv(output_feature_filename, index=False)
-
-                    print(f"Image {image_name} captured, processed, and features saved with {w} berries detected.\n\n")
-
-                    # Save the image with predicted annotations, if requested
-                    # THIS WILL NEED TO BE CHANGED FOR ROT DETECTION
-                    if save_predictions:
-                        display_image_with_masks(image = image, result = result, class_names = ["ColorCard", "berry", "info", "rotten"], 
-                                                 output_path = os.path.join(img_save_folder, image_name_vec[0]), save = True)
-                        # save_ROI_parallel(result, get_ids(result, 'berry'), os.path.join(img_save_folder, image_name_vec[0]))
-
-                    # Show a preview of the result
-                    if args.preview:
-                        print("Close the preview window before proceeding to the next sample.")
-                        # display_image_with_masks(image = image, results = results, class_names = ["ColorCard", "berry", "rotten"])
-                        display_image_with_masks(image = image, result = result, class_names = ["ColorCard", "berry", "info", "rotten"])
-
-
-                # DIFFERENT PROCESS FOR ROT DETECTION #
-                elif (mod == "rot-det"):
-                    # Summarize results
-                    objects_count, n_rotten, n_sound, perc_rot, weighted_perc_rot = summarize_rot_det_results(result)
-                    # If indeces is length 0; warn that no berries were found
-                    if objects_count == 0:
-                        print('\033[1;33mNo berries were found in the image!\033[0m')
-                        continue
-
-                    # 7. Save results (image name, date, barcode, object count) to CSV
-                    image_name = local_image_path.split("/")[-1]
-
-                    data = {
-                        'Date': current_datetime,
-                        'Image Name': image_name,
-                        'QR_info': barcode,
-                        'NumberSoundBerries': n_sound,
-                        'NumberRottenBerries': n_rotten,
-                        'FruitRotPer': perc_rot,
-                        'FruitRotPerWtd': weighted_perc_rot
-                    }
-                    df = pd.DataFrame(data, index = [0])
-
-                    # Append to CSV if it exists
-                    try:
-                        existing_df = pd.read_csv(output_feature_filename)
-                        df = pd.concat([existing_df, df], axis = 0, ignore_index=True)
-                    except FileNotFoundError:
-                        pass
-
-                    df.to_csv(output_feature_filename, index=False)
-
-                    print(f"Image {image_name} captured, processed, and features saved with {n_sound} sound berries and {n_rotten} rotten berries detected.\n\n")
-
-                    if save_predictions:
-                        save_ROI_boxes(image = image, result = result, class_names = ["rotten", "sound"], output_path = os.path.join(img_save_folder, image_name))
-
-                    # Show a preview of the result
-                    if args.preview:
-                        print("Close the preview window before proceeding to the next sample.")
-                        display_image_with_masks(image = image, result = result, class_names = ["rotten", "sound"], show_masks = False, show_count = True)
-
-
-        finally:
-            # Modify the output data frame for berry seg
-            if mod == "berry-seg":
-                # Read the df back in
-                df = pd.read_csv(output_feature_filename)
-
-                # Convert features to cm and rename
-                # Use the final patch size to calculate pixels to cm
-                cm_per_pixel = float(args.patch_size) / patch_size_use
-                df["Area"] = df["RP_Area"] * (cm_per_pixel ** 2)
-                df["Length"] = df["RP_Minor_axis_length"] * cm_per_pixel
-                df["Width"] = df["RP_Major_axis_length"] * cm_per_pixel
-                df["Ellipsoid_model_volume"] = df["Ellipsoid_model_volume"] * (cm_per_pixel ** 3)
-                df["cm_per_pixel"] = cm_per_pixel
-
-                ## Subset features
-                if args.reduce_features:
-                    features_select = ["Date", "Image Name", "QR_info", "Object_ID", "Patch_size", "name", "Area", "Length", "Width", "Ellipsoid_model_volume", "Eccentricity", "Red_Color_Mean", "Red_Color_Median", "Red_Color_Std", "Green_Color_Mean", "Green_Color_Median", "Green_Color_Std", "Blue_Color_Mean", "Blue_Color_Median", "Blue_Color_Std", "L_Color_Mean", "L_Color_Median", "L_Color_Std", "a_Color_Mean", "a_Color_Median", "a_Color_Std", "b_Color_Mean", "b_Color_Median", "b_Color_Std"]
-                    df = df[features_select]
-                else:
-                    features_drop = ["RP_Area", "RP_Major_axis_length", "RP_Minor_axis_length"]
-                    df = df.drop(columns = features_drop)
-                
-                # Save the df
-                df.to_csv(output_feature_filename, index=False)
-
-
-            # Ensure the SSH connection is closed at the end
-            ssh.close()
-            print("SSH connection closed.")
+        run_interactive(mod = mod, model = model, model_params = model_params, ssh = ssh, raw_image_dir = raw_image_dir, 
+                        newW = newW, newH = newH, patch_size_use = patch_size_use,
+                        output_file = output_feature_filename, patch_size = args.patch_size, 
+                        save = save_predictions, preview = args.preview, save_cc = save_cc, no_cc = no_cc, no_qr = no_qr,
+                        save_folder = img_save_folder, cc_save_folder = cc_save_folder, reduce = args.reduce_features)
 
     else:
-        ## RUN THE BATCH PIPELINE ##
-        print("\nRunning berryboxai in batch mode using the " + mod + " module...\n")
-
-        # List images in the input directory
-        image_extension = args.ext
-        image_extension = image_extension.upper()
-        image_list = os.listdir(input_dir)
-        image_path_list = [os.path.join(input_dir, x) for x in image_list if image_extension in x.upper()]
-        n_images = len(image_path_list)
-
-        # Print the number of images found
-        print("Using images from the directory: " + input_dir)
-        print("Discovered " + str(n_images) + " images in the directory")
-        print("Running the deep learning model on the images...\n")
-
-        # Iterate over images
-        for p, local_image_path in enumerate(image_path_list):
-
-            # 5. Read in the image and resize and run through the YOLO model
-            image_name = local_image_path.split("/")[-1]
-            image = cv2.imread(local_image_path)
-            image = cv2.resize(image, (newW, newH))
-            results = model.predict(source = image, **model_params)
-            # Map results to cpu
-            result = results[0].to("cpu")
-
-            ## PROCESS RESULTS DEPENDING ON THE MODULE ##
-            if mod == "berry-seg":
-                # 6. Process the results
-                # Try color correction; skip if it doesn't work
-                if not no_cc:
-                    try:
-                        result, patch_size = color_correction(result)
-                        patch_size = np.min(patch_size)
-                    except:
-                        continue
-                else:
-                    continue
-
-                # Update the patch size
-                if patch_size > 0:
-                    if patch_size < patch_size_use or patch_size_use == 0:
-                        patch_size_use = patch_size
-
-                # Try to detect the QR code if called on to do that
-                if no_qr:
-                    barcode = image_name
-                
-                else:
-                    if any(result.boxes.cls == get_ids(result, 'info')[0]):
-                        barcode = read_QR_code(result)
-                    else:
-                        barcode = image_name
-
-                # Get features
-                df1 = get_all_features_parallel(result, name= 'berry')
-                df2 = get_all_features_parallel(result, name= 'rotten')
-                df = pd.concat([pd.DataFrame({'name': (['berry'] * df1.shape[0]) + (['rotten'] * df2.shape[0])}), pd.concat([df1, df2], ignore_index = True)], axis = 1)    
-                w,_ = df.shape
-                image_name_vec = [image_name]*w
-                patch_size_vec = [np.mean(patch_size)]*w
-                indeces = list(range(w))
-                # If indeces is length 0; warn that no berries were found
-                if len(indeces) == 0:
-                    print('\033[1;33mNo berries were found in the image!\033[0m')
-                    continue
-
-                # 7. Save results (image name, date, barcode, object count) to CSV
-                data = {
-                    'Date': current_date,
-                    'Image Name': image_name_vec,
-                    'QR_info': barcode,
-                    'Object_ID': indeces,
-                    'Patch_size': patch_size_vec
-                }
-                df_fore = pd.DataFrame(data)
-                # Combine with the features
-                df = pd.concat([df_fore, df], axis=1)
-
-                ## Calculate additional features
-                # Volume
-                df["Ellipsoid_model_volume"] = (4/3) * np.pi * (df["RP_Minor_axis_length"] / 2) * ((df["RP_Major_axis_length"] / 2) ** 2)
-                # Eccentricity
-                df["Eccentricity"] = np.sqrt(1 - ((0.5 * df["RP_Major_axis_length"]) ** 2 / (0.5 * df["RP_Minor_axis_length"]) ** 2))
-
-                # Assign the berry ID by sorting on bounding box coordinates
-                df = df.sort_values(by=["RP_BB_y", "RP_BB_x"])
-                df = df.reset_index(drop=True)
-                df["Object_ID"] = df.index
-
-                # Append to CSV if it exists
-                try:
-                    existing_df = pd.read_csv(output_feature_filename)
-                    df = pd.concat([existing_df, df], axis = 0, ignore_index=True)
-                except FileNotFoundError:
-                    pass
-
-                df.to_csv(output_feature_filename, index=False)
-
-                print(f"Image {image_name} processed and features saved with {w} berries detected.")
-
-                # Save the image with predicted annotations, if requested
-                # THIS WILL NEED TO BE CHANGED FOR ROT DETECTION
-                if save_predictions:
-                    display_image_with_masks(image = image, result = result, class_names = ["ColorCard", "berry", "info", "rotten"], 
-                                             output_path = os.path.join(img_save_folder, image_name_vec[0]), save = True)
-                    # save_ROI_parallel(result, get_ids(result, 'berry'), os.path.join(img_save_folder, image_name_vec[0]))
+        run_batch(mod = mod, model = model, model_params = model_params, input_dir = input_dir, newW = newW, newH = newH,
+                  ext = args.ext, output_file = output_feature_filename, patch_size = args.patch_size,
+                  patch_size_use = patch_size_use, save = save_predictions, no_qr = no_qr, save_cc = save_cc,
+                  no_cc = no_cc, reduce = args.reduce_features, save_folder = img_save_folder, cc_save_folder = cc_save_folder)
 
 
-            # DIFFERENT PROCESS FOR ROT DETECTION #
-            elif (mod == "rot-det"):
-                # Summarize results
-                objects_count, n_rotten, n_sound, perc_rot, weighted_perc_rot = summarize_rot_det_results(result)
-                # If indeces is length 0; warn that no berries were found
-                if objects_count == 0:
-                    print('\033[1;33mNo berries were found in the image!\033[0m')
-                    continue
-
-                # 7. Save results (image name, date, barcode, object count) to CSV
-                image_name = local_image_path.split("/")[-1]
-
-                data = {
-                    'Image Name': image_name,
-                    'NumberSoundBerries': n_sound,
-                    'NumberRottenBerries': n_rotten,
-                    'FruitRotPer': perc_rot,
-                    'FruitRotPerWtd': weighted_perc_rot
-                }
-                df = pd.DataFrame(data, index = [0])
-
-                # Append to CSV if it exists
-                try:
-                    existing_df = pd.read_csv(output_feature_filename)
-                    df = pd.concat([existing_df, df], axis = 0, ignore_index=True)
-                except FileNotFoundError:
-                    pass
-
-                df.to_csv(output_feature_filename, index=False)
-
-                print(f"Image {image_name} processed, and features saved with {n_sound} sound berries and {n_rotten} rotten berries detected.")
-
-                if save_predictions:
-                    save_ROI_boxes(image = image, result = result, class_names = ["rotten", "sound"], output_path = os.path.join(img_save_folder, image_name))
-
-            print(f"Image {p + 1} of {n_images} processed.\n")
-
-        print("\nAll images processed. Results are saved in " + img_save_folder)
-
-        # Modify the output data frame for berry seg
-        if mod == "berry-seg":
-            # Read the df back in
-            df = pd.read_csv(output_feature_filename)
-
-            # Convert features to cm and rename
-            # Use the final patch size to calculate pixels to cm
-            cm_per_pixel = float(args.patch_size) / patch_size_use
-            df["Area"] = df["RP_Area"] * (cm_per_pixel ** 2)
-            df["Length"] = df["RP_Minor_axis_length"] * cm_per_pixel
-            df["Width"] = df["RP_Major_axis_length"] * cm_per_pixel
-            df["Ellipsoid_model_volume"] = df["Ellipsoid_model_volume"] * (cm_per_pixel ** 3)
-            df["cm_per_pixel"] = cm_per_pixel
-
-
-            ## Subset features
-            if args.reduce_features:
-                features_select = ["Date", "Image Name", "QR_info", "Object_ID", "Patch_size", "name", "Area", "Length", "Width", "Ellipsoid_model_volume", "Eccentricity", "Red_Color_Mean", "Red_Color_Median", "Red_Color_Std", "Green_Color_Mean", "Green_Color_Median", "Green_Color_Std", "Blue_Color_Mean", "Blue_Color_Median", "Blue_Color_Std", "L_Color_Mean", "L_Color_Median", "L_Color_Std", "a_Color_Mean", "a_Color_Median", "a_Color_Std", "b_Color_Mean", "b_Color_Median", "b_Color_Std"]
-                df = df[features_select]
-            else:
-                features_drop = ["RP_Area", "RP_Major_axis_length", "RP_Minor_axis_length"]
-                df = df.drop(columns = features_drop)
-            
-            # Save the df
-            df.to_csv(output_feature_filename, index=False)
    
 
 # Runs main function
