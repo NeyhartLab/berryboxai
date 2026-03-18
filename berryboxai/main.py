@@ -775,8 +775,10 @@ def main():
     ## SET MODULE-SPECIFIC SETTINGS ##
     if mod == "berry-seg":
         task = "segment"
+        agnosticnms = False
     elif mod == "rot-det":
         task = "detect"
+        agnosticnms = True
 
     iou = float(args.iou)
     if iou == 0:
@@ -872,7 +874,8 @@ def main():
         'cache': False, # use cache images for faster inference
         'retina_masks': False, #use high resolution seg mask
         'device': device, # cuda device, i.e. 0 or 0,1,2,3 or cpu
-        'verbose': args.verbose
+        'verbose': args.verbose,
+        'agnostic_nms': agnosticnms
     }
 
     # Tuple of image size
