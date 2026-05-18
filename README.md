@@ -120,5 +120,61 @@ The `--input` option is used to control whether you want interactive mode or bat
 In batch mode, the `--preview` option is disabled.
 
 
+## Running the Streamlit App
+
+## Installation
+
+Add Streamlit and Plotly to your existing environment:
+
+```bash
+pip install streamlit plotly
+# or
+conda install -c conda-forge streamlit plotly
+```
+
+## Running the App
+
+```bash
+streamlit run app.py
+```
+
+The app opens at http://localhost:8501
+
+## Pages
+
+### 📷 Interactive Mode
+- SSH connect/disconnect to Raspberry Pi with status badge
+- One-click Nikon D7500 camera check (gphoto2 auto-detect)
+- Barcode scanner input — keyboard wedge scanners work natively
+- Capture → SCP transfer → YOLO inference → feature extraction in one click
+- Annotated image displayed inline with live metrics after each sample
+- Session CSV grows continuously; download at any time
+
+### 📁 Batch Mode
+- Folder path input; auto-discovers images by extension
+- Progress bar with per-image status
+- Annotated thumbnail grid
+- Full cm-unit conversion for berry-seg at the end
+- Download results CSV when complete
+
+### 📊 Results Viewer
+- Scans output directory for all session folders automatically
+- Summary metrics panel
+- Data Table tab with column picker
+- Distributions tab (Plotly): bar charts, histograms, scatter, color channels
+- Annotated Images tab with filename filter and column slider
+- Export tab: full CSV, per-image summary, or reduced feature set
+
+## Sidebar Settings
+
+Module, confidence, IoU, image size, color correction, QR/OCR, custom model path, RPi credentials, output directory — all configurable and shared across pages.
+
+## Notes
+
+- Model weights must be at `berryboxai/data/weights/` or set via sidebar
+- OpenVINO conversion is automatic on Windows / Intel Mac
+- All feature extraction reuses existing `berryboxai.functions` module
+- `plotly` is only required for the charts tab
+
 
 
