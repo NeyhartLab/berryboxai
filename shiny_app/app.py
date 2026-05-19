@@ -86,6 +86,15 @@ with ui.sidebar():
     
     ui.input_slider("conf", "Confidence", 0.1, 1.0, 0.5, step=0.05)
     ui.input_slider("iou", "IoU", 0.1, 0.9, 0.25, step=0.05)
+
+    ui.hr()
+    ui.markdown("### Data Export (Required)")
+    with ui.layout_column_wrap(width=1, fill=False):
+        ui.input_text("save_base_dir", "Output Folder Path", placeholder="C:/BerryBox/Data")
+        # Added the browse button here
+        ui.input_action_button("btn_browse", "📂 Browse Folder", class_="btn-outline-secondary btn-sm")
+    
+    ui.input_text("session_name", "Session ID", value=datetime.now().strftime("%Y%m%d_%H%M"))
     
     ui.hr()
     ui.markdown("### Image Settings")
@@ -94,18 +103,11 @@ with ui.sidebar():
     ui.input_numeric("patch_size", "CC Patch Size (cm)", value=1.2)
     
     ui.hr()
-    ui.markdown("### Data Export (Required)")
-    ui.input_text("save_base_dir", "Output Folder Path", placeholder="C:/BerryBox/Data")
-    ui.input_text("session_name", "Session ID", value=datetime.now().strftime("%Y%m%d_%H%M"))
-    
-    ui.hr()
     ui.markdown("### Raspberry Pi")
     ui.input_text("rpi_ip", "IP Address", "169.254.111.10")
     ui.input_text("rpi_user", "Username", "cranpi2") 
     ui.input_password("rpi_pwd", "Password", value="usdacran")
-    
-    ui.hr()
-    ui.input_text("session_name", "Session ID", value=datetime.now().strftime("%Y%m%d_%H%M"))
+
 
 with ui.navset_bar(title="BerryBox AI"):
     
@@ -116,12 +118,22 @@ with ui.navset_bar(title="BerryBox AI"):
                 ui.input_action_button("btn_connect", "🔌 Connect Pi", class_="btn-primary")
                 ui.input_action_button("btn_check_cam", "📷 Setup Nikon")
                 ui.hr()
-                ui.input_action_button("btn_capture", "📸 CAPTURE & ANALYZE", class_="btn-success btn-lg")
                 
-                # --- NEW SHUTDOWN BUTTON ---
+                # Title Case and Full Width
+                ui.input_action_button(
+                    "btn_capture", 
+                    "Capture and Analyze", 
+                    class_="btn-success btn-lg w-100"
+                )
+                
+                # Title Case, Full Width, and matching Large size
                 ui.div(
-                    ui.input_action_button("btn_shutdown", "🛑 Shutdown App", class_="btn-danger mt-2"),
-                    style="margin-top: 15px;"
+                    ui.input_action_button(
+                        "btn_shutdown", 
+                        "Shutdown App", 
+                        class_="btn-danger btn-lg w-100"
+                    ),
+                    style="margin-top: 10px;"
                 )
                 
                 @render.text
@@ -165,6 +177,44 @@ with ui.navset_bar(title="BerryBox AI"):
                     return render.DataTable(df)
 
 # --- 5. SERVER LOGIC ---
+
+@reactive.effect
+@reactive.event(input.btn_browse)
+def _browse_folder():
+    import tkinter as tk
+    from tkinter import filedialog
+    
+    # Initialize tkinter and hide the main window
+    root = tk.Tk()
+    root.withdraw()
+    # Bring the dialog to the front of other windows
+    root.attributes("-topmost", True)
+    
+    selected_dir = filedialog.askdirectory(title="Select Output Folder")
+    root.destroy()
+    
+    if selected_dir:
+        # Normalize path for Windows compatibility
+        normalized_path = os.path.normpath(selected_dir).replace("\\", "/")
+        ui.update_text("save_base_dir", value=normalized_path)
+
+@reactive.effect
+@reactive.event(input.btn_shutdown)
+def _shutdown_app():
+    add_log("Shutting down...", "warn")
+    
+    # JavaScript to try and close the browser tab
+    ui.insert_ui(
+        ui.tags.script("window.close();"),
+        selector="body",
+        where="beforeEnd"
+    )
+    
+    # Small delay to allow log/JS to process
+    import time
+    import signal
+    time.sleep(0.5)
+    os.kill(os.getpid(), signal.SIGTERM)
 
 @reactive.effect
 @reactive.event(input.btn_shutdown)
