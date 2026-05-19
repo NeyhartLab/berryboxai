@@ -4,6 +4,7 @@ import numpy as np
 import os
 import platform
 from pathlib import Path
+import time
 
 def bgr_to_rgb(img: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -108,3 +109,34 @@ def ensure_session_dirs(base_dir: str, module: str, session_name: str) -> dict:
         output_dir=output_dir, pred_dir=pred_dir, cc_dir=cc_dir,
         feature_file=os.path.join(output_dir, f"{session_name}_features.csv"),
     )
+
+def setup_nikon_camera(ssh, camera_name: str = "Nikon DSC D7500", sleeps = 2):
+    """
+    Checks the Nikon camera connection via gphoto2 and sets specific 
+    exposure and white balance configurations.
+    """
+    # 1. Check detection
+    stdin, stdout, stderr = ssh.exec_command("gphoto2 --auto-detect")
+    det = stdout.read().decode("utf-8")
+    
+    if camera_name not in det:
+        raise RuntimeError(f"{camera_name} not found in auto-detect!")
+    
+    # 2. Kill existing processes to release the camera lock
+    ssh.exec_command("pkill -f gphoto2")
+    time.sleep(0.5)
+    
+    # 3. Set configurations
+    # ISO 100, WB 7 (usually Manual/Cloudy), F7.1, Shutter 1/25
+    configs = [
+        "iso=100",
+        "whitebalance=7",
+        "/main/capturesettings/f-number=7.1",
+        "/main/capturesettings/shutterspeed=25"
+    ]
+    
+    for cfg in configs:
+        ssh.exec_command(f"gphoto2 --set-config {cfg}")
+        time.sleep(sleeps)
+
+    return f"{camera_name} connected and configured."

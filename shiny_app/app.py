@@ -145,19 +145,7 @@ with ui.navset_bar(title="BerryBox AI"):
 
 # --- 5. SERVER LOGIC ---
 
-# 5.1 SSH Operations
-@reactive.effect
-@reactive.event(input.btn_connect)
-def _connect_pi():
-    try:
-        client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        client.connect(input.rpi_ip(), username="cranpi2", password=input.rpi_pwd(), timeout=5)
-        ssh_client.set(client)
-        add_log("SSH connection successful.", "ok")
-    except Exception as e:
-        add_log(f"Connection failed: {e}", "err")
-
+# 5.1 SSH & Camera Setup
 @reactive.effect
 @reactive.event(input.btn_check_cam)
 def _check_cam():
@@ -165,40 +153,56 @@ def _check_cam():
     if not client:
         add_log("Must connect SSH first.", "warn")
         return
-    _, stdout, _ = client.exec_command("libcamera-still --list-cameras")
-    if "Available cameras" in stdout.read().decode():
+    
+    try:
+        add_log("Configuring Nikon D7500...", "info")
+        # Call the new helper function
+        from utils.helpers import setup_nikon_camera
+        msg = setup_nikon_camera(client)
+        
         camera_ok.set(True)
-        add_log("Camera ready.", "ok")
-    else:
+        add_log(msg, "ok")
+    except Exception as e:
         camera_ok.set(False)
-        add_log("No camera detected.", "err")
+        add_log(f"Camera Setup Failed: {e}", "err")
 
-# 5.2 Interactive Capture & Inference
+
+# 5.2 Interactive Capture
 @reactive.effect
 @reactive.event(input.btn_capture)
 def _handle_capture():
     client = ssh_client()
-    if not client:
-        add_log("SSH not connected!", "err")
+    if not client or not camera_ok():
+        add_log("Camera not ready or SSH disconnected.", "err")
         return
 
     try:
         with ui.Progress(min=1, max=4) as p:
-            # 1. Trigger Pi
-            p.set(1, message="RPi: Taking photo...")
-            remote_img = "/tmp/capture.jpg"
-            client.exec_command(f"libcamera-still -o {remote_img} --immediate --nopreview --width 2400 --height 1600")
+            # 1. Trigger Nikon via gphoto2
+            p.set(1, message="Nikon: Capturing image...")
             
-            # 2. SFTP Transfer
-            p.set(2, message="Transferring image to local...")
+            # We use --force-overwrite to ensure /tmp/capture.jpg is always the newest
+            # We use --filename to specify exactly where the RPi saves it
+            remote_img = "/tmp/capture.jpg"
+            cmd = f"gphoto2 --capture-image-and-download --filename {remote_img} --force-overwrite"
+            
+            stdin, stdout, stderr = client.exec_command(cmd)
+            exit_status = stdout.channel.recv_exit_status()
+            
+            if exit_status != 0:
+                add_log("gphoto2 capture failed! Check camera battery/connection.", "err")
+                return
+            
+            # 2. SFTP Transfer (Same as before)
+            p.set(2, message="Transferring from Pi...")
             local_raw = APP_DIR / "last_raw.jpg"
             sftp = client.open_sftp()
             sftp.get(remote_img, str(local_raw))
             sftp.close()
 
-            # 3. Inference (USING CACHED MODEL)
+            # 3. Inference
             p.set(3, message="Running AI Inference...")
-            model = get_model() # This is fast after the first load
+            model = get_model()
             img_bgr = cv2.imread(str(local_raw))
             
             cfg = {"module": input.module(), "conf": input.conf(), "iou": input.iou(), "imgsz": (1600, 2400)}
@@ -207,19 +211,17 @@ def _handle_capture():
             res = results[0]
 
             # 4. Processing Results
-            p.set(4, message="Rendering results...")
+            p.set(4, message="Rendering...")
             class_names = ["berry", "rotten", "sound"]
             annotated = annotated_image_rgb(img_bgr, res, class_names)
             
-            # Calculate metrics
             total = len(res.boxes)
             rotten = int(sum(res.boxes.cls == 1)) if total > 0 else 0
             pct = (rotten / total * 100) if total > 0 else 0
 
-            # Update UI
             last_processed_img.set(annotated)
             last_metrics.set({"total": total, "pct_rot": pct})
-            add_log(f"Analyzed {total} berries.", "ok")
+            add_log(f"Nikon capture processed: {total} items.", "ok")
 
     except Exception as e:
         add_log(f"Capture Error: {e}", "err")
