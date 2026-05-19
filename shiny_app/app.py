@@ -119,14 +119,20 @@ with ui.navset_bar(title="BerryBox AI"):
                 ui.input_action_button("btn_check_cam", "📷 Setup Nikon")
                 ui.hr()
                 
-                # Title Case and Full Width
+                # --- NEW SAMPLE ID INPUT ---
+                ui.input_text(
+                    "sample_id", 
+                    "Sample ID (Scan QR or Type)", 
+                    placeholder="e.g., Plot_101",
+                    width="100%"
+                )
+                
                 ui.input_action_button(
                     "btn_capture", 
                     "Capture and Analyze", 
                     class_="btn-success btn-lg w-100"
                 )
                 
-                # Title Case, Full Width, and matching Large size
                 ui.div(
                     ui.input_action_button(
                         "btn_shutdown", 
@@ -288,6 +294,12 @@ def _check_cam():
 @reactive.effect
 @reactive.event(input.btn_capture)
 def _handle_capture():
+    # --- 1. NEW: SAMPLE ID CHECK ---
+    current_sample_id = input.sample_id().strip()
+    if not current_sample_id:
+        add_log("Sample ID is required! Please scan or type it.", "err")
+        return
+
     # --- PRE-FLIGHT CHECKS ---
     if not input.save_base_dir() or not os.path.exists(input.save_base_dir()):
         add_log("Output folder is missing or invalid! Set it first.", "err")
@@ -323,7 +335,8 @@ def _handle_capture():
             # STEP 2: Download
             p.set(2, message="Downloading from Pi...")
             current_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            image_name = f"capture_{current_datetime}.jpg"
+            # Include the sample ID in the image name
+            image_name = f"{current_sample_id}_{current_datetime}.jpg"
             local_raw = str(img_export_path / image_name)
             
             sftp = client.open_sftp()
@@ -378,6 +391,7 @@ def _handle_capture():
                     df_meta = pd.DataFrame({
                         'Date': [current_datetime] * total_objs,
                         'Image Name': [image_name] * total_objs,
+                        'Sample_ID': [current_sample_id] * total_objs,
                         'QR_info': [barcode] * total_objs,
                         'Object_ID': list(range(total_objs)),
                         'Patch_size': [cc_patch_size] * total_objs
@@ -406,13 +420,12 @@ def _handle_capture():
 
             elif input.module() == "rot-det":
                 objects_count, n_rotten, n_sound, perc_rot, weighted_perc_rot = summarize_rot_det_results(result)
-                total_objs = objects_count
-                pct_rot = perc_rot
                 
-                if total_objs > 0:
+                if objects_count > 0:
                     df_final = pd.DataFrame({
                         'Date': [current_datetime],
                         'Image Name': [image_name],
+                        'Sample_ID': [current_sample_id],
                         'NumberSoundBerries': [n_sound],
                         'NumberRottenBerries': [n_rotten],
                         'FruitRotPer': [perc_rot],
@@ -423,32 +436,30 @@ def _handle_capture():
                         df_final = pd.concat([existing_df, df_final], ignore_index=True)
                     df_final.to_csv(csv_path, index=False)
 
-            # STEP 5: Update UI
+            # STEP 5: Update UI Metrics (Filtering out non-fruit objects)
             p.set(5, message="Finalizing Results...")
             class_names = ["berry", "rotten", "sound"]
             annotated = annotated_image_rgb(img_bgr, result, class_names)
 
-            # --- NEW METRIC CALCULATION ---
-            # Get the raw class IDs from the prediction
-            detected_classes = result.boxes.cls.cpu().numpy()
-            
-            # Find which integer IDs correspond to our valid fruit classes
+            # Map the valid fruit IDs
             valid_fruit_names = {"berry", "rotten", "sound"}
             valid_ids = [k for k, v in result.names.items() if v in valid_fruit_names]
             rot_ids = [k for k, v in result.names.items() if v == "rotten"]
+            detected_classes = result.boxes.cls.cpu().numpy()
             
-            # Count only the valid fruits
+            # Recalculate metrics just for fruit
             total_berries = sum(1 for c in detected_classes if c in valid_ids)
-            rotten_berries = sum(1 for c in detected_classes if c in rot_ids)
-            
-            # Calculate percentage based only on the valid fruits
-            ui_pct_rot = (rotten_berries / total_berries * 100) if total_berries > 0 else 0
+            n_rotten_ui = sum(1 for c in detected_classes if c in rot_ids)
+            ui_pct_rot = (n_rotten_ui / total_berries * 100) if total_berries > 0 else 0
 
-            # Update the reactive variables for the UI
+            # Update UI state
             last_processed_img.set(annotated)
             last_metrics.set({"total": total_berries, "pct_rot": ui_pct_rot})
             
-            add_log(f"Processed {total_berries} berries.", "ok")
+            # Clear the Sample ID box for the next scan
+            ui.update_text("sample_id", value="")
+            
+            add_log(f"Processed & Saved {total_berries} items to CSV.", "ok")
 
     except Exception as e:
         add_log(f"Error: {str(e)}", "err")
