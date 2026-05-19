@@ -33,7 +33,7 @@ def annotated_image_rgb(image, result, class_names, show_masks=True, show_count=
     count_dict  = {n: 0 for n in class_names}
     sorted_idx  = sorted(range(len(boxes)), key=lambda i: (boxes[i][1], boxes[i][0]))
 
-for rank, i in enumerate(sorted_idx, 1):
+    for rank, i in enumerate(sorted_idx, 1):
         class_name = result.names[int(class_ids[i])]
         color = get_color(class_name)
         
