@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 from datetime import datetime
+import pkg_resources
 
 # Shiny Imports
 from shiny import reactive, render, ui
@@ -15,7 +16,8 @@ from shiny.express import input, output, ui
 # --- 1. PATHING & IMPORTS ---
 APP_DIR = Path(__file__).resolve().parent
 BASE_DIR = APP_DIR.parent
-WEIGHTS_DIR = BASE_DIR / "data" / "weights"
+package_dir = pkg_resources.resource_filename('berryboxai', 'data')
+WEIGHTS_DIR = os.path.join(package_dir, 'weights')
 
 sys.path.insert(0, str(APP_DIR))
 
