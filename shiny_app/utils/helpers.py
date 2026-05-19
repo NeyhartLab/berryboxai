@@ -5,6 +5,8 @@ import os
 import platform
 import time
 from pathlib import Path
+import math
+
 
 def bgr_to_rgb(img: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -150,3 +152,45 @@ def build_model_params(cfg: dict) -> dict:
         device=get_device(), verbose=cfg.get("verbose", False),
         agnostic_nms=(cfg["module"] == "rot-det"),
     )
+
+
+# A function to summarize results from the rot object detection model
+def summarize_rot_det_results(result):
+    # Find the class integers corresponding to the classes
+    class_names = ["rotten", "sound"]
+    results_names = {v: k for k, v in result.names.items()}
+
+    # Get the boxes
+    detected_boxes = result.boxes
+    detected_classes = detected_boxes.cls.numpy()
+    objects_count = len(detected_classes)
+    if objects_count == 0:
+        return (0, 0, 0, 0, 0)
+
+    # Count sound and rot
+    class_counts = {x: (detected_classes == results_names[x]).sum() for x in class_names}
+    n_rotten = class_counts.get("rotten", 0)
+    n_sound = class_counts.get("sound", 0)
+    n_total_berries = n_rotten + n_sound
+
+    # Calculate rot percent
+    perc_rot = round((n_rotten / n_total_berries) * 100, 3) if n_total_berries > 0 else 0
+
+    # Calculate weighted percent rot based on the area of inscribed ellipse of each box
+    weights = []
+    xyxys = detected_boxes.xyxy.numpy()
+    for obj in xyxys:
+        xmin, ymin, xmax, ymax = obj[:4] 
+        width = xmax - xmin
+        height = ymax - ymin
+        area = math.pi * (width / 2) * (height / 2)
+        weights.append(area)
+
+    values = [1 if x == results_names.get("rotten", -1) else 0 for x in detected_classes]
+    if sum(weights) > 0:
+        weighted_sum = sum(v * w for v, w in zip(values, weights))
+        weighted_perc_rot = round((weighted_sum / sum(weights)) * 100, 3)
+    else:
+        weighted_perc_rot = 0
+
+    return (n_total_berries, n_rotten, n_sound, perc_rot, weighted_perc_rot)

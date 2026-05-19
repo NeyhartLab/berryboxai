@@ -8,6 +8,8 @@ import pandas as pd
 from pathlib import Path
 from datetime import datetime
 import pkg_resources
+import signal
+import time
 
 # Shiny Imports
 from shiny import reactive, render, ui
@@ -30,6 +32,10 @@ from utils.helpers import (
     build_model_params, 
     setup_nikon_camera
 )
+
+# Import your custom feature extractors
+from utils.functions import color_correction, read_QR_code, get_all_features_parallel, get_ids
+from utils.helpers import summarize_rot_det_results # The new one we just added
 
 # --- 2. GLOBAL REACTIVE STATE ---
 ssh_client = reactive.Value(None)
@@ -82,6 +88,17 @@ with ui.sidebar():
     ui.input_slider("iou", "IoU", 0.1, 0.9, 0.25, step=0.05)
     
     ui.hr()
+    ui.markdown("### Image Settings")
+    ui.input_checkbox("do_cc", "Enable Color Correction", value=True)
+    ui.input_checkbox("do_qr", "Read QR/Barcode", value=True)
+    ui.input_numeric("patch_size", "CC Patch Size (cm)", value=1.2)
+    
+    ui.hr()
+    ui.markdown("### Data Export (Required)")
+    ui.input_text("save_base_dir", "Output Folder Path", placeholder="C:/BerryBox/Data")
+    ui.input_text("session_name", "Session ID", value=datetime.now().strftime("%Y%m%d_%H%M"))
+    
+    ui.hr()
     ui.markdown("### Raspberry Pi")
     ui.input_text("rpi_ip", "IP Address", "169.254.111.10")
     ui.input_text("rpi_user", "Username", "cranpi2") 
@@ -100,6 +117,12 @@ with ui.navset_bar(title="BerryBox AI"):
                 ui.input_action_button("btn_check_cam", "📷 Setup Nikon")
                 ui.hr()
                 ui.input_action_button("btn_capture", "📸 CAPTURE & ANALYZE", class_="btn-success btn-lg")
+                
+                # --- NEW SHUTDOWN BUTTON ---
+                ui.div(
+                    ui.input_action_button("btn_shutdown", "🛑 Shutdown App", class_="btn-danger mt-2"),
+                    style="margin-top: 15px;"
+                )
                 
                 @render.text
                 def display_logs():
@@ -144,6 +167,35 @@ with ui.navset_bar(title="BerryBox AI"):
 # --- 5. SERVER LOGIC ---
 
 @reactive.effect
+@reactive.event(input.btn_shutdown)
+def _shutdown_app():
+    add_log("Initiating shutdown sequence...", "warn")
+    
+    # 1. Attempt to close the browser window via JavaScript
+    ui.insert_ui(
+        ui.tags.script("setTimeout(function() { window.close(); }, 500);"),
+        selector="body",
+        where="beforeEnd"
+    )
+    
+    # 2. Wait a moment to let the JS reach the browser, then kill the backend
+    time.sleep(1)
+    os.kill(os.getpid(), signal.SIGTERM) 
+
+@reactive.effect
+@reactive.event(input.btn_browse)
+def _browse_folder():
+    import tkinter as tk
+    from tkinter import filedialog
+    root = tk.Tk()
+    root.withdraw()  # Hide the main tkinter window
+    root.attributes("-topmost", True)  # Bring dialog to front
+    selected_dir = filedialog.askdirectory()
+    root.destroy()
+    if selected_dir:
+        ui.update_text("save_base_dir", value=selected_dir)
+
+@reactive.effect
 @reactive.event(input.btn_connect)
 def _connect_pi():
     add_log(f"Connecting to {input.rpi_ip()}...", "info")
@@ -180,6 +232,11 @@ def _check_cam():
 @reactive.effect
 @reactive.event(input.btn_capture)
 def _handle_capture():
+    # --- PRE-FLIGHT CHECKS ---
+    if not input.save_base_dir() or not os.path.exists(input.save_base_dir()):
+        add_log("Output folder is missing or invalid! Set it first.", "err")
+        return
+        
     client = ssh_client.get()
     if not client:
         add_log("Connect SSH first!", "err")
@@ -190,8 +247,14 @@ def _handle_capture():
 
     try:
         current_model = get_model()
+        
+        # Setup directories
+        export_path = Path(input.save_base_dir()) / input.session_name()
+        img_export_path = export_path / "images"
+        img_export_path.mkdir(parents=True, exist_ok=True)
 
-        with ui.Progress(min=1, max=4) as p:
+        with ui.Progress(min=1, max=5) as p:
+            # STEP 1: Capture
             p.set(1, message="Nikon: Triggering Shutter...")
             remote_img = "/tmp/capture.jpg"
             cmd = f"gphoto2 --capture-image-and-download --filename {remote_img} --force-overwrite"
@@ -201,38 +264,135 @@ def _handle_capture():
                 add_log("Nikon Capture Failed!", "err")
                 return
 
-            p.set(2, message="Downloading from Raspberry Pi...")
-            local_raw = APP_DIR / "last_raw.jpg"
+            # STEP 2: Download
+            p.set(2, message="Downloading from Pi...")
+            current_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            image_name = f"capture_{current_datetime}.jpg"
+            local_raw = str(img_export_path / image_name)
+            
             sftp = client.open_sftp()
-            # sftp.get needs string path
-            sftp.get(remote_img, str(local_raw))
+            sftp.get(remote_img, local_raw)
             sftp.close()
 
-            p.set(3, message="AI: Running Inference...")
-            img_bgr = cv2.imread(str(local_raw))
+            # STEP 3: Inference
+            p.set(3, message="AI: Running YOLO...")
+            img_bgr = cv2.imread(local_raw)
             h, w = img_bgr.shape[:2]
 
-            cfg = {
-                "module": input.module(), 
-                "conf": input.conf(), 
-                "iou": input.iou(), 
-                "imgsz": (h, w) 
-            }
+            cfg = {"module": input.module(), "conf": input.conf(), "iou": input.iou(), "imgsz": (h, w)}
             params = build_model_params(cfg)
             results = current_model.predict(img_bgr, **params)
-            res = results[0]
+            result = results[0].to("cpu")
 
-            p.set(4, message="Finalizing Results...")
-            class_names = ["berry", "rotten", "sound"]
-            annotated = annotated_image_rgb(img_bgr, res, class_names)
+            # STEP 4: Feature Extraction
+            p.set(4, message="Extracting Features...")
+            csv_path = export_path / f"{input.session_name()}_features.csv"
             
-            total = len(res.boxes)
-            rotten = int(sum(res.boxes.cls == 1)) if total > 0 else 0
-            pct = (rotten / total * 100) if total > 0 else 0
+            total_objs = 0
+            pct_rot = 0
 
+            if input.module() == "berry-seg":
+                # Color Correction
+                cc_patch_size = 0
+                if input.do_cc():
+                    try:
+                        result, cc_patch_sizes = color_correction(result)
+                        cc_patch_size = np.min(cc_patch_sizes)
+                    except Exception as e:
+                        add_log(f"Color Correction skipped: {e}", "warn")
+                
+                # QR Code
+                barcode = image_name
+                if input.do_qr() and any(result.boxes.cls == get_ids(result, 'info')[0]):
+                    barcode = read_QR_code(result)
+
+                # Get Deep Features
+                df1 = get_all_features_parallel(result, name='berry')
+                df2 = get_all_features_parallel(result, name='rotten')
+                
+                df_features = pd.concat([
+                    pd.DataFrame({'name': (['berry'] * df1.shape[0]) + (['rotten'] * df2.shape[0])}), 
+                    pd.concat([df1, df2], ignore_index=True)
+                ], axis=1)
+                
+                total_objs = df_features.shape[0]
+                
+                if total_objs > 0:
+                    # Construct Metadata Front
+                    df_meta = pd.DataFrame({
+                        'Date': [current_datetime] * total_objs,
+                        'Image Name': [image_name] * total_objs,
+                        'QR_info': [barcode] * total_objs,
+                        'Object_ID': list(range(total_objs)),
+                        'Patch_size': [cc_patch_size] * total_objs
+                    })
+                    
+                    df_final = pd.concat([df_meta, df_features], axis=1)
+                    
+                    # Compute Physics
+                    df_final["Ellipsoid_model_volume"] = (4/3) * np.pi * (df_final["RP_Minor_axis_length"] / 2) * ((df_final["RP_Major_axis_length"] / 2) ** 2)
+                    df_final["Eccentricity"] = np.sqrt(1 - ((0.5 * df_final["RP_Major_axis_length"]) ** 2 / (0.5 * df_final["RP_Minor_axis_length"]) ** 2))
+                    
+                    # Convert to CM based on patch size
+                    if cc_patch_size > 0:
+                        cm_per_pixel = float(input.patch_size()) / cc_patch_size
+                        df_final["Area"] = df_final["RP_Area"] * (cm_per_pixel ** 2)
+                        df_final["Length"] = df_final["RP_Minor_axis_length"] * cm_per_pixel
+                        df_final["Width"] = df_final["RP_Major_axis_length"] * cm_per_pixel
+                        df_final["Ellipsoid_model_volume"] = df_final["Ellipsoid_model_volume"] * (cm_per_pixel ** 3)
+                        df_final["cm_per_pixel"] = cm_per_pixel
+
+                    # Save to CSV
+                    if csv_path.exists():
+                        existing_df = pd.read_csv(csv_path)
+                        df_final = pd.concat([existing_df, df_final], ignore_index=True)
+                    df_final.to_csv(csv_path, index=False)
+
+            elif input.module() == "rot-det":
+                objects_count, n_rotten, n_sound, perc_rot, weighted_perc_rot = summarize_rot_det_results(result)
+                total_objs = objects_count
+                pct_rot = perc_rot
+                
+                if total_objs > 0:
+                    df_final = pd.DataFrame({
+                        'Date': [current_datetime],
+                        'Image Name': [image_name],
+                        'NumberSoundBerries': [n_sound],
+                        'NumberRottenBerries': [n_rotten],
+                        'FruitRotPer': [perc_rot],
+                        'FruitRotPerWtd': [weighted_perc_rot]
+                    })
+                    if csv_path.exists():
+                        existing_df = pd.read_csv(csv_path)
+                        df_final = pd.concat([existing_df, df_final], ignore_index=True)
+                    df_final.to_csv(csv_path, index=False)
+
+            # STEP 5: Update UI
+            p.set(5, message="Finalizing Results...")
+            class_names = ["berry", "rotten", "sound"]
+            annotated = annotated_image_rgb(img_bgr, result, class_names)
+
+            # --- NEW METRIC CALCULATION ---
+            # Get the raw class IDs from the prediction
+            detected_classes = result.boxes.cls.cpu().numpy()
+            
+            # Find which integer IDs correspond to our valid fruit classes
+            valid_fruit_names = {"berry", "rotten", "sound"}
+            valid_ids = [k for k, v in result.names.items() if v in valid_fruit_names]
+            rot_ids = [k for k, v in result.names.items() if v == "rotten"]
+            
+            # Count only the valid fruits
+            total_berries = sum(1 for c in detected_classes if c in valid_ids)
+            rotten_berries = sum(1 for c in detected_classes if c in rot_ids)
+            
+            # Calculate percentage based only on the valid fruits
+            ui_pct_rot = (rotten_berries / total_berries * 100) if total_berries > 0 else 0
+
+            # Update the reactive variables for the UI
             last_processed_img.set(annotated)
-            last_metrics.set({"total": total, "pct_rot": pct})
-            add_log(f"Analyzed {total} objects.", "ok")
+            last_metrics.set({"total": total_berries, "pct_rot": ui_pct_rot})
+            
+            add_log(f"Processed {total_berries} berries.", "ok")
 
     except Exception as e:
         add_log(f"Error: {str(e)}", "err")
