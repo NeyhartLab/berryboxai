@@ -49,9 +49,21 @@ def add_log(msg, level="info"):
 def get_model():
     module_name = input.module()
     task = "segment" if module_name == "berry-seg" else "detect"
-    add_log(f"Loading weights for {module_name}...", "info")
+    
+    # Pre-check for OpenVINO conversion to warn the user
+    import platform
+    is_ov_eligible = (platform.system() == "Windows") or \
+                     (platform.system() == "Darwin" and platform.machine() == "x86_64")
+    ov_path = WEIGHTS_DIR / f"berrybox_{module_name}_openvino_model"
+    
+    if is_ov_eligible and not ov_path.exists():
+        add_log("FIRST RUN: Converting to OpenVINO (1-3 mins)...", "warn")
+        # Note: The UI might pause here while load_model runs the conversion
+    else:
+        add_log(f"Loading {module_name}...", "info")
+
     model = load_model(module_name, task, str(WEIGHTS_DIR))
-    add_log(f"Model {module_name} is active.", "ok")
+    add_log(f"Model {module_name} ready.", "ok")
     return model
 
 # --- 4. UI ---
@@ -176,39 +188,50 @@ def _handle_capture():
         add_log("Connect SSH first!", "err")
         return
     if not camera_ok.get():
-        add_log("Setup camera first!", "warn")
+        add_log("Setup Nikon first!", "warn")
         return
 
     try:
+        # 1. Trigger Model Load FIRST (This handles the conversion lag)
+        # If it's already loaded, this is instant. 
+        # If it needs conversion, it happens here before the 'Capture' bar starts.
+        current_model = get_model()
+
         with ui.Progress(min=1, max=4) as p:
-            p.set(1, message="Nikon: Triggering shutter...")
+            # STEP 1
+            p.set(1, message="Nikon: Triggering Shutter...")
             remote_img = "/tmp/capture.jpg"
-            # Command specifically for Nikon tethering
             cmd = f"gphoto2 --capture-image-and-download --filename {remote_img} --force-overwrite"
             stdin, stdout, stderr = client.exec_command(cmd)
             
-            # Wait for command to finish
             if stdout.channel.recv_exit_status() != 0:
-                err_msg = stderr.read().decode()
-                add_log(f"Capture failed: {err_msg}", "err")
+                add_log("Nikon Capture Failed!", "err")
                 return
 
-            p.set(2, message="Downloading image...")
+            # STEP 2
+            p.set(2, message="Downloading from Raspberry Pi...")
             local_raw = APP_DIR / "last_raw.jpg"
             sftp = client.open_sftp()
             sftp.get(remote_img, str(local_raw))
             sftp.close()
 
-            p.set(3, message="AI Inference...")
-            model = get_model()
+            # STEP 3
+            p.set(3, message="AI: Running Inference...")
             img_bgr = cv2.imread(str(local_raw))
-            
-            cfg = {"module": input.module(), "conf": input.conf(), "iou": input.iou(), "imgsz": (1600, 2400)}
+            h, w = img_bgr.shape[:2]
+
+            cfg = {
+                "module": input.module(), 
+                "conf": input.conf(), 
+                "iou": input.iou(), 
+                "imgsz": (h, w) # Passing original size helps YOLO scale internally
+            }
             params = build_model_params(cfg)
-            results = model.predict(img_bgr, **params)
+            results = current_model.predict(img_bgr, **params)
             res = results[0]
 
-            p.set(4, message="Finalizing UI...")
+            # STEP 4
+            p.set(4, message="Finalizing Results...")
             class_names = ["berry", "rotten", "sound"]
             annotated = annotated_image_rgb(img_bgr, res, class_names)
             
@@ -221,7 +244,7 @@ def _handle_capture():
             add_log(f"Analyzed {total} objects.", "ok")
 
     except Exception as e:
-        add_log(f"Analysis Error: {str(e)}", "err")
+        add_log(f"Error: {str(e)}", "err")
 
 @reactive.effect
 @reactive.event(input.btn_run_batch)

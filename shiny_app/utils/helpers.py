@@ -11,6 +11,8 @@ def bgr_to_rgb(img: np.ndarray) -> np.ndarray:
 
 def annotated_image_rgb(image, result, class_names, show_masks=True, show_count=False):
     img = image.copy()
+    h, w = img.shape[:2]
+    
     colors_bgr = {
         "berry": (255, 100, 0), "rotten": (0, 200, 50),
         "sound": (50, 100, 255), "ColorCard": (200, 200, 0), "info": (180, 0, 180),
@@ -22,7 +24,8 @@ def annotated_image_rgb(image, result, class_names, show_masks=True, show_count=
 
     masks = None
     if show_masks and hasattr(result, "masks") and result.masks is not None:
-        masks = result.masks.data.numpy()
+        # Move to CPU and get numpy array
+        masks = result.masks.data.cpu().numpy()
 
     boxes       = result.boxes.xyxy.numpy()
     class_ids   = result.boxes.cls.numpy()
@@ -30,16 +33,28 @@ def annotated_image_rgb(image, result, class_names, show_masks=True, show_count=
     count_dict  = {n: 0 for n in class_names}
     sorted_idx  = sorted(range(len(boxes)), key=lambda i: (boxes[i][1], boxes[i][0]))
 
-    for rank, i in enumerate(sorted_idx, 1):
+for rank, i in enumerate(sorted_idx, 1):
         class_name = result.names[int(class_ids[i])]
         color = get_color(class_name)
-        if class_name in count_dict:
-            count_dict[class_name] += 1
+        
+        # --- MASK DRAWING WITH RESIZING FIX ---
         if masks is not None and i < len(masks):
+            # 1. Take the single mask
+            mask = masks[i] 
+            
+            # 2. Resize mask to match the original image dimensions (w, h)
+            # This prevents the "Could not broadcast" error
+            mask_resized = cv2.resize(mask, (w, h), interpolation=cv2.INTER_LINEAR)
+            
+            # 3. Apply color
             colored_mask = np.zeros_like(img, dtype=np.uint8)
             for c in range(3):
-                colored_mask[:,:,c] = masks[i] * color[c]
+                # Ensure mask is treated as a boolean multiplier
+                colored_mask[:,:,c] = (mask_resized > 0.5) * color[c]
+                
             img = cv2.addWeighted(img, 1, colored_mask, 0.4, 0)
+        
+        # --- BOX DRAWING ---
         x1,y1,x2,y2 = map(int, boxes[i])
         cv2.rectangle(img, (x1,y1),(x2,y2), color, 2)
         cv2.putText(img, f"{class_name} {confidences[i]:.2f}",
