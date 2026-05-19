@@ -61,24 +61,30 @@ def annotated_image_rgb(image, result, class_names, show_masks=True, show_count=
     return bgr_to_rgb(img)
 
 
-@st.cache_resource(show_spinner="Loading YOLO model…")
-def load_model(module: str, model_path_override: str = "."):
+def load_model(module: str, task: str, weights_dir: str):
+    """
+    Loads the YOLO model based on the operating system and architecture.
+    Matches the 3-argument call: (module, task, weights_dir)
+    """
     from ultralytics import YOLO
-    task = "segment" if module == "berry-seg" else "detect"
-    if model_path_override != ".":
-        if not os.path.isfile(model_path_override):
-            raise FileNotFoundError(f"Model not found: {model_path_override}")
-        return YOLO(model_path_override, task=task)
-    try:
-        package_dir = pkg_resources.resource_filename("berryboxai", "data")
-    except Exception:
-        package_dir = str(Path(__file__).resolve().parents[2] / "data")
+    import platform
+    import os
+
     system, machine = platform.system(), platform.machine()
+    
+    # Select the model format based on OS
+    # Use OpenVINO for Windows/Intel Mac, .pt for others (Linux/Raspberry Pi/M1 Mac)
     if system == "Windows" or (system == "Darwin" and machine == "x86_64"):
         model_name = f"berrybox_{module}_openvino_model"
     else:
         model_name = f"berrybox_{module}.pt"
-    return YOLO(os.path.join(package_dir, "weights", model_name), task=task)
+        
+    model_path = os.path.join(weights_dir, model_name)
+    
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"Model weights not found at: {model_path}")
+        
+    return YOLO(model_path, task=task)
 
 
 def get_device() -> str:
