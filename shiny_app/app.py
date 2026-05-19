@@ -146,11 +146,17 @@ with ui.navset_bar(title="BerryBox AI"):
                     @render.image
                     def interactive_preview():
                         img = last_processed_img()
-                        if img is None: return None
+                        if img is None: 
+                            return None
+                        
                         temp_path = APP_DIR / "temp_interactive.jpg"
-                        # cv2.imwrite needs a string path
                         cv2.imwrite(str(temp_path), cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
-                        return {"src": str(temp_path), "width": "100%"}
+                        
+                        # Added CSS styles to force-fit the image to the UI card
+                        return {
+                            "src": str(temp_path),
+                            "style": "width: 100%; max-height: 75vh; object-fit: contain;"
+                        }
 
                 with ui.layout_columns():
                     @render.ui

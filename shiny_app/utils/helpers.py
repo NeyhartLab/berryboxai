@@ -69,11 +69,24 @@ def annotated_image_rgb(image, result, class_names, show_masks=True, show_count=
         
         # --- BOX & LABEL DRAWING ---
         x1, y1, x2, y2 = map(int, boxes[i])
-        cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
+        
+        # Increased thickness to 8 for high-res visibility
+        cv2.rectangle(img, (x1, y1), (x2, y2), color, 8) 
         
         label = f"{class_name} {confidences[i]:.2f}"
-        cv2.putText(img, label, (x1, max(y1 - 10, 25)), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA)
+        
+        # Font scale increased to 3.5 and thickness to 8
+        # Offset increased to 50 to accommodate larger font
+        cv2.putText(
+            img, 
+            label, 
+            (x1, max(y1 - 20, 100)), 
+            cv2.FONT_HERSHEY_SIMPLEX, 
+            3.5, 
+            color, 
+            8, 
+            cv2.LINE_AA
+        )
 
     return bgr_to_rgb(img)
 
