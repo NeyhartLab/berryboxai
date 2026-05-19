@@ -1,17 +1,13 @@
 """Shared helpers: image annotation, model loading, directory setup."""
 import cv2
 import numpy as np
-import streamlit as st
 import os
 import platform
-import pkg_resources
-from pathlib import Path
 import time
-
+from pathlib import Path
 
 def bgr_to_rgb(img: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-
 
 def annotated_image_rgb(image, result, class_names, show_masks=True, show_count=False):
     img = image.copy()
@@ -49,92 +45,57 @@ def annotated_image_rgb(image, result, class_names, show_masks=True, show_count=
         cv2.putText(img, f"{class_name} {confidences[i]:.2f}",
                     (x1, max(y1-8,12)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
 
-    if show_count:
-        lines = []
-        if "sound"  in count_dict: lines.append(f"Sound: {count_dict['sound']}")
-        if "rotten" in count_dict: lines.append(f"Rotten: {count_dict['rotten']}")
-        text = "   ".join(lines)
-        if text:
-            cv2.putText(img, text, (20,45), cv2.FONT_HERSHEY_SIMPLEX,
-                        1.1, (0,255,80), 3, lineType=cv2.LINE_AA)
-
     return bgr_to_rgb(img)
-
 
 def load_model(module: str, task: str, weights_dir: str):
     """
-    Loads the YOLO model based on the operating system and architecture.
-    Matches the 3-argument call: (module, task, weights_dir)
+    Loads YOLO model. If on Windows/Intel Mac and OpenVINO version is missing,
+    it automatically converts the .pt file to OpenVINO format.
     """
     from ultralytics import YOLO
-    import platform
-    import os
-
+    
     system, machine = platform.system(), platform.machine()
+    is_openvino_eligible = (system == "Windows") or (system == "Darwin" and machine == "x86_64")
     
-    # Select the model format based on OS
-    # Use OpenVINO for Windows/Intel Mac, .pt for others (Linux/Raspberry Pi/M1 Mac)
-    if system == "Windows" or (system == "Darwin" and machine == "x86_64"):
-        model_name = f"berrybox_{module}_openvino_model"
-    else:
-        model_name = f"berrybox_{module}.pt"
-        
-    model_path = os.path.join(weights_dir, model_name)
+    pt_name = f"berrybox_{module}.pt"
+    ov_name = f"berrybox_{module}_openvino_model"
     
-    if not os.path.exists(model_path):
-        raise FileNotFoundError(f"Model weights not found at: {model_path}")
+    pt_path = os.path.join(weights_dir, pt_name)
+    ov_path = os.path.join(weights_dir, ov_name)
+
+    # 1. Handle OpenVINO Conversion for eligible platforms
+    if is_openvino_eligible:
+        if not os.path.exists(ov_path):
+            if not os.path.exists(pt_path):
+                raise FileNotFoundError(f"Neither .pt nor OpenVINO model found for {module} in {weights_dir}")
+            
+            print(f"--- Converting {module} to OpenVINO for first-time use ---")
+            model_to_convert = YOLO(pt_path)
+            imgsz = (1856, 2784) if "seg" in module else (1600, 2400)
+            
+            # This creates the ov_path folder
+            model_to_convert.export(format='openvino', imgsz=imgsz, half=True)
+            print(f"--- Conversion complete: {ov_path} ---")
         
-    return YOLO(model_path, task=task)
-
-
-def get_device() -> str:
-    if platform.system() == "Darwin" and platform.machine() == "arm64":
-        return "mps"
-    return "cpu"
-
-
-def build_model_params(cfg: dict) -> dict:
-    return dict(
-        save=False, show_labels=True, show_conf=True, save_crop=False,
-        line_width=3, conf=cfg["conf"], iou=cfg["iou"], imgsz=cfg["imgsz"],
-        exist_ok=False, half=True, cache=False, retina_masks=False,
-        device=get_device(), verbose=cfg.get("verbose", False),
-        agnostic_nms=(cfg["module"] == "rot-det"),
-    )
-
-
-def ensure_session_dirs(base_dir: str, module: str, session_name: str) -> dict:
-    session_dir   = os.path.join(base_dir, session_name)
-    raw_image_dir = os.path.join(session_dir, "images")
-    output_dir    = os.path.join(session_dir, "output")
-    pred_dir      = os.path.join(output_dir,  "predictions")
-    cc_dir        = os.path.join(output_dir,  "color_corrected_images")
-    for d in [base_dir, session_dir, raw_image_dir, output_dir, pred_dir, cc_dir]:
-        os.makedirs(d, exist_ok=True)
-    return dict(
-        session_dir=session_dir, raw_image_dir=raw_image_dir,
-        output_dir=output_dir, pred_dir=pred_dir, cc_dir=cc_dir,
-        feature_file=os.path.join(output_dir, f"{session_name}_features.csv"),
-    )
+        return YOLO(ov_path, task=task)
+    
+    # 2. Handle standard .pt loading (Linux / ARM Mac)
+    if not os.path.exists(pt_path):
+        raise FileNotFoundError(f"Model weights (.pt) not found at: {pt_path}")
+        
+    return YOLO(pt_path, task=task)
 
 def setup_nikon_camera(ssh, camera_name: str = "Nikon DSC D7500", sleeps = 2):
-    """
-    Checks the Nikon camera connection via gphoto2 and sets specific 
-    exposure and white balance configurations.
-    """
-    # 1. Check detection
+    """Checks Nikon connection via gphoto2 and sets exposure/WB configs."""
     stdin, stdout, stderr = ssh.exec_command("gphoto2 --auto-detect")
     det = stdout.read().decode("utf-8")
     
     if camera_name not in det:
-        raise RuntimeError(f"{camera_name} not found in auto-detect!")
+        raise RuntimeError(f"{camera_name} not found in gphoto2 auto-detect!")
     
-    # 2. Kill existing processes to release the camera lock
     ssh.exec_command("pkill -f gphoto2")
     time.sleep(0.5)
     
-    # 3. Set configurations
-    # ISO 100, WB 7 (usually Manual/Cloudy), F7.1, Shutter 1/25
     configs = [
         "iso=100",
         "whitebalance=7",
@@ -147,3 +108,17 @@ def setup_nikon_camera(ssh, camera_name: str = "Nikon DSC D7500", sleeps = 2):
         time.sleep(sleeps)
 
     return f"{camera_name} connected and configured."
+
+def get_device() -> str:
+    if platform.system() == "Darwin" and platform.machine() == "arm64":
+        return "mps"
+    return "cpu"
+
+def build_model_params(cfg: dict) -> dict:
+    return dict(
+        save=False, show_labels=True, show_conf=True, save_crop=False,
+        line_width=3, conf=cfg["conf"], iou=cfg["iou"], imgsz=cfg["imgsz"],
+        exist_ok=False, half=True, cache=False, retina_masks=False,
+        device=get_device(), verbose=cfg.get("verbose", False),
+        agnostic_nms=(cfg["module"] == "rot-det"),
+    )
