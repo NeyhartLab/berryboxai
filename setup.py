@@ -7,7 +7,7 @@ with open('requirements.txt', 'r') as f:
     requirements = f.readlines()
 
 name_ = 'berryboxai'
-decr_ = 'A command line tool for measuring quality traits from postharvest cranberries and blueberries.'
+decr_ = 'A command line and Shiny tool for measuring quality traits from postharvest cranberries and blueberries.'
 
 setup(
     name=name_,
@@ -19,12 +19,17 @@ setup(
     long_description_content_type='text/markdown',
     packages=find_packages(),
     package_data={
-        'berryboxai': ['data/weights/*'],  # Include the models directory
+        'berryboxai': [
+            'data/weights/*', 
+            'shiny_app/*.py',     # Ensure app.py and other logic is included
+            'shiny_app/utils/*.py' # Ensure subfolders in shiny_app are included
+        ],
     },
     install_requires=requirements,
     entry_points={
         'console_scripts': [
-            'berryboxai=berryboxai.main:main',  # Entry point to the CLI tool
+            'berryboxai=berryboxai.main:main',  # Entry point to the CLI tool 
+            'berryboxaiApp=shiny_app.run:run_gui', # New GUI Launcher
         ],
     },
     classifiers=[
