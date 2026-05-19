@@ -11,5 +11,9 @@ opencv-python
 scp
 pandas
 colour-science==0.4.4
-streamlit
 plotly
+# Shiny Specifics
+shiny>=0.10.0
+shinywidgets
+pillow
+faicons
