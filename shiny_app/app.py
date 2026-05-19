@@ -16,8 +16,10 @@ from shiny.express import input, output, ui
 # --- 1. PATHING & IMPORTS ---
 APP_DIR = Path(__file__).resolve().parent
 BASE_DIR = APP_DIR.parent
-package_dir = pkg_resources.resource_filename('berryboxai', 'data')
-WEIGHTS_DIR = os.path.join(package_dir, 'weights')
+
+# Resolve the package data directory and ensure WEIGHTS_DIR is a Path object
+package_data_path = pkg_resources.resource_filename('berryboxai', 'data')
+WEIGHTS_DIR = Path(package_data_path) / 'weights'
 
 sys.path.insert(0, str(APP_DIR))
 
@@ -35,11 +37,11 @@ camera_ok = reactive.Value(False)
 log_lines = reactive.Value(["[System] Ready."])
 last_processed_img = reactive.Value(None)
 last_metrics = reactive.Value({})
+batch_results = reactive.Value(None) # Added this to prevent errors in Batch tab
 
 def add_log(msg, level="info"):
     ts = datetime.now().strftime("%H:%M:%S")
     tag = {"info":"·","ok":"✓","warn":"⚠","err":"✗"}.get(level,"·")
-    # Reactive update
     current_logs = log_lines.get()
     new_logs = current_logs + [f"[{ts}] {tag} {msg}"]
     log_lines.set(new_logs)
@@ -54,14 +56,16 @@ def get_model():
     import platform
     is_ov_eligible = (platform.system() == "Windows") or \
                      (platform.system() == "Darwin" and platform.machine() == "x86_64")
+    
+    # Using / with Path object is now safe
     ov_path = WEIGHTS_DIR / f"berrybox_{module_name}_openvino_model"
     
     if is_ov_eligible and not ov_path.exists():
         add_log("FIRST RUN: Converting to OpenVINO (1-3 mins)...", "warn")
-        # Note: The UI might pause here while load_model runs the conversion
     else:
         add_log(f"Loading {module_name}...", "info")
 
+    # Pass weights_dir as string to the helper
     model = load_model(module_name, task, str(WEIGHTS_DIR))
     add_log(f"Model {module_name} ready.", "ok")
     return model
@@ -80,7 +84,7 @@ with ui.sidebar():
     ui.hr()
     ui.markdown("### Raspberry Pi")
     ui.input_text("rpi_ip", "IP Address", "169.254.111.10")
-    ui.input_text("rpi_user", "Username", "cranpi2") # Added this back!
+    ui.input_text("rpi_user", "Username", "cranpi2") 
     ui.input_password("rpi_pwd", "Password", value="usdacran")
     
     ui.hr()
@@ -99,7 +103,6 @@ with ui.navset_bar(title="BerryBox AI"):
                 
                 @render.text
                 def display_logs():
-                    # Reverse to show newest at top, or keep standard
                     return "\n".join(log_lines.get()[-12:])
 
             with ui.layout_columns(col_widths=[12, 12]):
@@ -110,6 +113,7 @@ with ui.navset_bar(title="BerryBox AI"):
                         img = last_processed_img()
                         if img is None: return None
                         temp_path = APP_DIR / "temp_interactive.jpg"
+                        # cv2.imwrite needs a string path
                         cv2.imwrite(str(temp_path), cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
                         return {"src": str(temp_path), "width": "100%"}
 
@@ -133,7 +137,7 @@ with ui.navset_bar(title="BerryBox AI"):
         with ui.card():
             @render.data_frame
             def batch_table():
-                df = batch_results()
+                df = batch_results.get()
                 if df is not None:
                     return render.DataTable(df)
 
@@ -142,21 +146,16 @@ with ui.navset_bar(title="BerryBox AI"):
 @reactive.effect
 @reactive.event(input.btn_connect)
 def _connect_pi():
-    # 1. Provide immediate feedback
     add_log(f"Connecting to {input.rpi_ip()}...", "info")
-    
     try:
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        
-        # Use the inputs from sidebar
         client.connect(
             input.rpi_ip(), 
             username=input.rpi_user(), 
             password=input.rpi_pwd(), 
             timeout=8
         )
-        
         ssh_client.set(client)
         add_log("SSH connection established.", "ok")
     except Exception as e:
@@ -169,10 +168,8 @@ def _check_cam():
     if not client:
         add_log("Cannot setup: SSH not connected.", "warn")
         return
-    
     try:
         add_log("Initializing Nikon D7500 settings...", "info")
-        # setup_nikon_camera is now in helpers.py
         msg = setup_nikon_camera(client)
         camera_ok.set(True)
         add_log(msg, "ok")
@@ -192,13 +189,9 @@ def _handle_capture():
         return
 
     try:
-        # 1. Trigger Model Load FIRST (This handles the conversion lag)
-        # If it's already loaded, this is instant. 
-        # If it needs conversion, it happens here before the 'Capture' bar starts.
         current_model = get_model()
 
         with ui.Progress(min=1, max=4) as p:
-            # STEP 1
             p.set(1, message="Nikon: Triggering Shutter...")
             remote_img = "/tmp/capture.jpg"
             cmd = f"gphoto2 --capture-image-and-download --filename {remote_img} --force-overwrite"
@@ -208,14 +201,13 @@ def _handle_capture():
                 add_log("Nikon Capture Failed!", "err")
                 return
 
-            # STEP 2
             p.set(2, message="Downloading from Raspberry Pi...")
             local_raw = APP_DIR / "last_raw.jpg"
             sftp = client.open_sftp()
+            # sftp.get needs string path
             sftp.get(remote_img, str(local_raw))
             sftp.close()
 
-            # STEP 3
             p.set(3, message="AI: Running Inference...")
             img_bgr = cv2.imread(str(local_raw))
             h, w = img_bgr.shape[:2]
@@ -224,13 +216,12 @@ def _handle_capture():
                 "module": input.module(), 
                 "conf": input.conf(), 
                 "iou": input.iou(), 
-                "imgsz": (h, w) # Passing original size helps YOLO scale internally
+                "imgsz": (h, w) 
             }
             params = build_model_params(cfg)
             results = current_model.predict(img_bgr, **params)
             res = results[0]
 
-            # STEP 4
             p.set(4, message="Finalizing Results...")
             class_names = ["berry", "rotten", "sound"]
             annotated = annotated_image_rgb(img_bgr, res, class_names)
@@ -249,5 +240,6 @@ def _handle_capture():
 @reactive.effect
 @reactive.event(input.btn_run_batch)
 def _handle_batch():
-    # (Same batch logic as before, just use ssh_client.get() or get_model())
+    # Placeholder logic for batch processing
+    add_log("Batch processing not yet fully implemented in this server block.", "info")
     pass

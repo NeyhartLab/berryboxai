@@ -10,6 +10,10 @@ def bgr_to_rgb(img: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
 def annotated_image_rgb(image, result, class_names, show_masks=True, show_count=False):
+    """
+    Annotates BGR image with YOLO results. 
+    Handles mask resizing to match original Nikon high-res dimensions.
+    """
     img = image.copy()
     h, w = img.shape[:2]
     
@@ -17,48 +21,57 @@ def annotated_image_rgb(image, result, class_names, show_masks=True, show_count=
         "berry": (255, 100, 0), "rotten": (0, 200, 50),
         "sound": (50, 100, 255), "ColorCard": (200, 200, 0), "info": (180, 0, 180),
     }
-    fallback = [(0,255,255),(255,0,255),(0,165,255)]
+    fallback = [(0, 255, 255), (255, 0, 255), (0, 165, 255)]
 
     def get_color(name):
         return colors_bgr.get(name, fallback[hash(name) % len(fallback)])
 
+    # Extract Masks
     masks = None
     if show_masks and hasattr(result, "masks") and result.masks is not None:
-        # Move to CPU and get numpy array
         masks = result.masks.data.cpu().numpy()
 
-    boxes       = result.boxes.xyxy.numpy()
-    class_ids   = result.boxes.cls.numpy()
-    confidences = result.boxes.conf.numpy()
+    # Extract Boxes, Classes, and Confidences safely
+    if result.boxes is None:
+        return bgr_to_rgb(img)
+
+    boxes       = result.boxes.xyxy.cpu().numpy()
+    class_ids   = result.boxes.cls.cpu().numpy()
+    confidences = result.boxes.conf.cpu().numpy()
+    
     count_dict  = {n: 0 for n in class_names}
+    # Sort detections by Y-coordinate (top to bottom)
     sorted_idx  = sorted(range(len(boxes)), key=lambda i: (boxes[i][1], boxes[i][0]))
 
-    for rank, i in enumerate(sorted_idx, 1):
-        class_name = result.names[int(class_ids[i])]
+    for i in sorted_idx:
+        idx = int(class_ids[i])
+        class_name = result.names[idx] if hasattr(result, "names") else class_names[idx]
         color = get_color(class_name)
         
-        # --- MASK DRAWING WITH RESIZING FIX ---
+        if class_name in count_dict:
+            count_dict[class_name] += 1
+        
+        # --- MASK DRAWING (With Resize Fix) ---
         if masks is not None and i < len(masks):
-            # 1. Take the single mask
             mask = masks[i] 
-            
-            # 2. Resize mask to match the original image dimensions (w, h)
-            # This prevents the "Could not broadcast" error
+            # Resize mask from inference resolution to original image resolution
             mask_resized = cv2.resize(mask, (w, h), interpolation=cv2.INTER_LINEAR)
             
-            # 3. Apply color
+            # Apply colored overlay
             colored_mask = np.zeros_like(img, dtype=np.uint8)
+            binary_mask = (mask_resized > 0.5).astype(np.uint8)
             for c in range(3):
-                # Ensure mask is treated as a boolean multiplier
-                colored_mask[:,:,c] = (mask_resized > 0.5) * color[c]
+                colored_mask[:, :, c] = binary_mask * color[c]
                 
             img = cv2.addWeighted(img, 1, colored_mask, 0.4, 0)
         
-        # --- BOX DRAWING ---
-        x1,y1,x2,y2 = map(int, boxes[i])
-        cv2.rectangle(img, (x1,y1),(x2,y2), color, 2)
-        cv2.putText(img, f"{class_name} {confidences[i]:.2f}",
-                    (x1, max(y1-8,12)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
+        # --- BOX & LABEL DRAWING ---
+        x1, y1, x2, y2 = map(int, boxes[i])
+        cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
+        
+        label = f"{class_name} {confidences[i]:.2f}"
+        cv2.putText(img, label, (x1, max(y1 - 10, 25)), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA)
 
     return bgr_to_rgb(img)
 
@@ -82,21 +95,20 @@ def load_model(module: str, task: str, weights_dir: str):
     if is_openvino_eligible:
         if not os.path.exists(ov_path):
             if not os.path.exists(pt_path):
-                raise FileNotFoundError(f"Neither .pt nor OpenVINO model found for {module} in {weights_dir}")
+                raise FileNotFoundError(f"Model file not found: {pt_path}")
             
-            print(f"--- Converting {module} to OpenVINO for first-time use ---")
+            print(f"--- Exporting {module} to OpenVINO... ---")
             model_to_convert = YOLO(pt_path)
+            # Use standard export sizes
             imgsz = (1856, 2784) if "seg" in module else (1600, 2400)
-            
-            # This creates the ov_path folder
             model_to_convert.export(format='openvino', imgsz=imgsz, half=True)
-            print(f"--- Conversion complete: {ov_path} ---")
+            print(f"--- Export complete. ---")
         
         return YOLO(ov_path, task=task)
     
-    # 2. Handle standard .pt loading (Linux / ARM Mac)
+    # 2. Standard .pt loading
     if not os.path.exists(pt_path):
-        raise FileNotFoundError(f"Model weights (.pt) not found at: {pt_path}")
+        raise FileNotFoundError(f"Model file not found: {pt_path}")
         
     return YOLO(pt_path, task=task)
 
@@ -108,6 +120,7 @@ def setup_nikon_camera(ssh, camera_name: str = "Nikon DSC D7500", sleeps = 2):
     if camera_name not in det:
         raise RuntimeError(f"{camera_name} not found in gphoto2 auto-detect!")
     
+    # Free the camera lock
     ssh.exec_command("pkill -f gphoto2")
     time.sleep(0.5)
     
