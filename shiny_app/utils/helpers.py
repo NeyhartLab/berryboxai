@@ -1,13 +1,17 @@
 """Shared helpers: image annotation, model loading, directory setup."""
 import cv2
 import numpy as np
+import streamlit as st
 import os
 import platform
+import pkg_resources
 from pathlib import Path
 import time
 
+
 def bgr_to_rgb(img: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
 
 def annotated_image_rgb(image, result, class_names, show_masks=True, show_count=False):
     img = image.copy()
@@ -57,27 +61,24 @@ def annotated_image_rgb(image, result, class_names, show_masks=True, show_count=
     return bgr_to_rgb(img)
 
 
-def load_model(module: str, task: str, weights_dir: str):
-    """
-    Loads the YOLO model based on the operating system and architecture.
-    Accepts the absolute path to the weights directory from app.py.
-    """
+@st.cache_resource(show_spinner="Loading YOLO model…")
+def load_model(module: str, model_path_override: str = "."):
     from ultralytics import YOLO
-    
+    task = "segment" if module == "berry-seg" else "detect"
+    if model_path_override != ".":
+        if not os.path.isfile(model_path_override):
+            raise FileNotFoundError(f"Model not found: {model_path_override}")
+        return YOLO(model_path_override, task=task)
+    try:
+        package_dir = pkg_resources.resource_filename("berryboxai", "data")
+    except Exception:
+        package_dir = str(Path(__file__).resolve().parents[2] / "data")
     system, machine = platform.system(), platform.machine()
-    
-    # Use OpenVINO for Windows and Intel Macs for performance
     if system == "Windows" or (system == "Darwin" and machine == "x86_64"):
         model_name = f"berrybox_{module}_openvino_model"
     else:
         model_name = f"berrybox_{module}.pt"
-        
-    model_path = os.path.join(weights_dir, model_name)
-    
-    if not os.path.exists(model_path):
-        raise FileNotFoundError(f"Model not found at: {model_path}")
-        
-    return YOLO(model_path, task=task)
+    return YOLO(os.path.join(package_dir, "weights", model_name), task=task)
 
 
 def get_device() -> str:
